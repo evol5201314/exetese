@@ -1,0 +1,26 @@
+name: 模拟OpenWrt精简Python环境
+on:
+  workflow_dispatch
+
+jobs:
+  run-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装极简Python3
+        run: |
+          sudo apt update
+          sudo apt install -y python3 python3-pip --no-install-recommends
+          sudo apt autoremove -y --purge
+          sudo rm -rf /var/lib/apt/lists/*
+
+      - name: 仅安装requests，无缓存
+        run: pip3 install --no-cache-dir requests
+
+      - name: 限制内存128MB
+        run: ulimit -v 131072
+
+      - name: 执行脚本
+        run: python3 main.py
