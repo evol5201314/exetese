@@ -3,7 +3,7 @@
 硬件环境：路由可用内存仅≈50M，精简python，峰值内存控制≤13M
 """
 import requests, time, gc, os, sys
-
+beizhu = "📈 监控股价"
 sys.stdout = open(os.devnull, 'w')
 sys.stderr = open(os.devnull, 'w')
 
