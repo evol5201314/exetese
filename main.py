@@ -1,13 +1,19 @@
 import requests, time, gc, os, sys
+from requests.adapters import HTTPAdapter, Retry
+
 # 屏蔽全部控制台输出，输出丢黑洞，零闪存擦写
 sys.stdout = open(os.devnull, 'w')
 sys.stderr = open(os.devnull, 'w')
 
-# 网络全局参数 8秒统一超时 关闭长连接 0初始重试防僵死
-requests.adapters.DEFAULT_RETRIES = 0
+# 网络全局参数 8秒统一超时 关闭长连接 增加重试机制
+GLOBAL_TIMEOUT = 8
 SESS = requests.Session()
 SESS.keep_alive = False
-GLOBAL_TIMEOUT = 8
+# 给http全局挂载重试，重点解决新浪美股偶发超时
+retry_opt = Retry(total=2, backoff_factor=0.4, status_forcelist=[403,429,500,502,503,504])
+SESS.mount("https://", HTTPAdapter(max_retries=retry_opt))
+SESS.mount("http://", HTTPAdapter(max_retries=retry_opt))
+
 HEADERS = {
     "User-Agent": "Mozilla/5.0 Linux Chrome/124.0 Safari/537.36",
     "Connection": "close"
@@ -129,7 +135,7 @@ def get_stock_info(code_list):
     gc.collect()
     return "\n".join(buf)
 
-# 美股指数函数：增强容错，保证不会整块丢失
+# 美股指数函数：加重试+失败占位文字，杜绝空白板块
 def get_us_index(rate, idx_list):
     buf = []
     url = f"http://hq.sinajs.cn/list={','.join(idx_list)}"
@@ -137,6 +143,9 @@ def get_us_index(rate, idx_list):
         resp = SESS.get(url, headers=HEADERS, timeout=GLOBAL_TIMEOUT)
         text_lines = resp.text.split(";")
         del resp
+        # 判断返回文本是否为空，空则直接报错
+        if not text_lines or len(text_lines) == 0:
+            raise Exception("新浪接口返回空数据")
         for line in text_lines:
             line = line.strip()
             if not line or '="' not in line:
@@ -163,9 +172,13 @@ def get_us_index(rate, idx_list):
                 "----------------------------------------"
             ]
         del text_lines
+        # 解析完如果buf为空，说明没读到任何指数数据
+        if len(buf) == 0:
+            buf.append("未获取到任何美股指数行情数据，接口返回无有效内容")
+            buf.append("----------------------------------------")
     except Exception as err:
-        # 接口异常时保留占位文本，不会整段消失
-        buf.append(f"美股指数接口请求失败：{str(err)}")
+        # 网络/解析失败固定填充提示，不会空白
+        buf.append(f"美股指数拉取失败（新浪接口网络拦截/超时）：{str(err)}")
         buf.append("----------------------------------------")
     gc.collect()
     return "\n".join(buf)
@@ -242,11 +255,11 @@ if __name__ == "__main__":
         del gold_info, gold_block
         gc.collect()
 
-        # 获取美股，单独捕获内部异常，保证变量一定存在不会丢失板块
+        # 独立捕获美股全局异常，保证变量一定存在
         try:
             us_text = "===== 美股宽基指数 =====\n" + get_us_index(usd_ex, US_INDEX_LIST)
         except Exception as us_err:
-            us_text = f"===== 美股宽基指数 =====\n美股整体获取异常：{str(us_err)}"
+            us_text = f"===== 美股宽基指数 =====\n严重异常，完全无法获取：{str(us_err)}\n----------------------------------------"
         gc.collect()
 
         # 获取虚拟币
