@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 import os
-
+beizhu = "📈 恢复command脚本数据"
 LUCI_FILE = '/etc/config/luci'
 COMMAND_FILE = '/etc/config/command'
 
