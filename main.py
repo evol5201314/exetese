@@ -12,8 +12,8 @@ API_LIST = [
 ]
 ETF_CODE = "518880"
 ETF_GRAM_PER_SHARE = 0.01
-# A股/场内基金列表，空格分隔
-STOCK_CODES = "518880 002594 600036"
+# A股/场内基金列表，只保留黄金ETF，删除比亚迪、招行
+STOCK_CODES = "518880"
 # ==================================
 
 def push_wechat(title, content):
@@ -76,7 +76,7 @@ def get_gold_data():
     raise Exception("所有金价接口均访问失败，请检查容器网络")
 
 def get_stock_info(code_str):
-    """A股/基金统一行情文本"""
+    """A股/基金统一行情文本，新增昨日涨幅字段"""
     code_list = code_str.split()
     line_list = []
     code_param = ""
@@ -102,21 +102,25 @@ def get_stock_info(code_str):
             name = arr[0]
             now = float(arr[3])
             last_close = float(arr[2])
+            yesterday_price = float(arr[1])
             change = round(now - last_close, 2)
             change_pct = round((change / last_close) * 100, 2)
+            last_day_change = round(last_close - yesterday_price, 2)
+            last_day_pct = round((last_day_change / yesterday_price) * 100, 2)
             code = line.split("=")[0].split("_")[-1]
-            # 统一格式
+            # 统一格式：增加昨日涨跌、昨日涨幅
             line_list.append(f"{code} {name}")
             line_list.append(f"当前价位：{now} 元")
             line_list.append(f"昨日收盘：{last_close} 元")
             line_list.append(f"当日涨跌：{change} 元（{change_pct}%）")
+            line_list.append(f"昨日涨跌：{last_day_change} 元（{last_day_pct}%）")
             line_list.append("-" * 30)
     except Exception as e:
         line_list.append(f"A股行情获取失败：{str(e)}")
     return "\n".join(line_list)
 
 def get_us_index(usd_rate):
-    """纳指、标普500，统一格式+换算人民币点位"""
+    """纳指、标普500，统一格式+换算人民币点位+昨日涨幅"""
     index_codes = ["int_nasdaq", "int_sp500"]
     url = f"http://hq.sinajs.cn/list={','.join(index_codes)}"
     headers = {"User-Agent": "Mozilla/5.0 Python Script", "Referer": "http://finance.sina.com.cn"}
@@ -133,11 +137,15 @@ def get_us_index(usd_rate):
             change = float(data[2])
             change_pct = float(data[3])
             last_close = round(now - change, 2)
+            yesterday_point = float(data[4])
+            last_day_change = round(last_close - yesterday_point, 2)
+            last_day_pct = round((last_day_change / yesterday_point) * 100, 2)
             cny_price = round(now * usd_rate, 2)
             line_list.append(f"{idx_name}")
             line_list.append(f"当前价位：{now} 点（折合人民币 {cny_price}）")
             line_list.append(f"昨日收盘：{last_close} 点")
             line_list.append(f"当日涨跌：{change} 点（{change_pct}%）")
+            line_list.append(f"昨日涨跌：{last_day_change} 点（{last_day_pct}%）")
             line_list.append("-" * 30)
     except Exception as e:
         line_list.append(f"美股指数获取失败：{str(e)}")
@@ -162,7 +170,7 @@ if __name__ == "__main__":
         ]
         gold_text = "\n".join(gold_block)
 
-        # A股板块
+        # A股板块（仅保留518880）
         stock_text = "【A股/场内基金行情】\n" + get_stock_info(STOCK_CODES)
 
         # 美股指数板块
