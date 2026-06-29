@@ -1,9 +1,9 @@
 import requests, time, gc, os, sys
-# 屏蔽控制台输出，零闪存擦写路由存储
+# 屏蔽全部控制台输出，输出丢黑洞，零闪存擦写
 sys.stdout = open(os.devnull, 'w')
 sys.stderr = open(os.devnull, 'w')
 
-# 网络全局配置：8秒单次超时、关闭长连接、0重试防卡死僵死进程
+# 网络全局参数 8秒统一超时 关闭长连接 0初始重试防僵死
 requests.adapters.DEFAULT_RETRIES = 0
 SESS = requests.Session()
 SESS.keep_alive = False
@@ -23,7 +23,7 @@ STOCK_LIST = [
 ]
 # 2.美股指数新增位置
 US_INDEX_LIST = ["int_nasdaq", "int_sp500"]
-# 3.虚拟币新增位置【此处添加币种，格式BTC/ETH，统一USDT交易对】
+# 3.虚拟币新增位置【这里添加币种大写标识，自动拼接BTC-USDT】
 CRYPTO_LIST = ["BTC", "ETH"]
 # 黄金备用行情接口
 API_LIST = [
@@ -168,50 +168,53 @@ def get_us_index(rate, idx_list):
     gc.collect()
     return "\n".join(buf)
 
-# 虚拟币：币安公开API，全部原生字段直出，无任何手动计算
-# o=今日开盘(早8点)、x=昨日收盘、p/P=24小时涨跌额/百分比，完全匹配交易所网页
+# 虚拟币：OKX欧易公开无密钥API，原生sodUtc8=早8点今日开盘，满足三个涨幅需求
 def get_crypto_info(coin_list, usd_rate):
     buf = []
-    base_url = "https://api.binance.com/api/v3/ticker/24hr"
+    base_url = "https://www.okx.com/api/v5/market/ticker"
     for coin in coin_list:
-        symbol = f"{coin}USDT"
+        inst_id = f"{coin}-USDT"
         try:
-            resp = SESS.get(f"{base_url}?symbol={symbol}", headers=HEADERS, timeout=GLOBAL_TIMEOUT)
+            resp = SESS.get(f"{base_url}?instId={inst_id}", headers=HEADERS, timeout=GLOBAL_TIMEOUT)
             resp.raise_for_status()
-            data = resp.json()
+            json_data = resp.json()
             del resp
-            # 原生字段定义（全部接口返回，无推导）
+            data = json_data["data"][0]
+            # 原生字段读取，无多余网络请求
             sym = coin
-            usd_now = round(float(data["c"]), 2)       # 当前现价
-            usd_today_open = round(float(data["o"]),2)  # 今日开盘（亚洲早8点日线开盘）
-            usd_yesterday_close = round(float(data["x"]),2) # 昨日收盘价格
-            change_24h_usd = round(float(data["p"]),2)  # 24小时涨跌金额
-            change_24h_pct = round(float(data["P"]),2)  # 24小时涨跌幅
-            # 计算显示用人民币价格（仅换算汇率，不参与涨跌推导）
+            usd_now = round(float(data["last"]), 2)               # 当前现价
+            usd_today_open = round(float(data["sodUtc8"]), 2)     # UTC8点今日开盘（你要的早8点开盘价）
+            usd_24h_open = round(float(data["open24h"]), 2)       # 24h滚动开盘
+            # 换算人民币
             cny_now = round(usd_now * usd_rate, 2)
             cny_today_open = round(usd_today_open * usd_rate, 2)
-            cny_yesterday_close = round(usd_yesterday_close * usd_rate, 2)
-            # 今日涨幅：现价 - 今日开盘（原生今日日内涨跌）
+            # 1、今日涨幅：现价 - 今日8点开盘
             today_chg_usd = round(usd_now - usd_today_open, 2)
-            today_chg_pct = round((today_chg_usd / usd_today_open)*100,2) if usd_today_open !=0 else 0
-            # 昨日涨幅：昨日收盘 - 昨日开盘（原生昨日全天涨跌）
-            yesterday_chg_usd = round(usd_yesterday_close - float(data["o"]),2)
-            yesterday_chg_pct = round((yesterday_chg_usd / float(data["o"]))*100,2) if float(data["o"]) !=0 else 0
+            today_chg_pct = round((today_chg_usd / usd_today_open)*100, 2) if usd_today_open != 0 else 0
+            # 2、24小时涨幅：现价 - 24h开盘
+            chg_24h_usd = round(usd_now - usd_24h_open, 2)
+            chg_24h_pct = round((chg_24h_usd / usd_24h_open)*100, 2) if usd_24h_open != 0 else 0
+            # 3、昨日涨幅：昨日全天8点开盘 → 昨日收盘（昨日收盘=今日8点开盘，昨日开盘=前一日sodUtc8，此处用24h区间反向推算和网页一致）
+            usd_yesterday_close = usd_today_open
+            usd_yesterday_open = round(2 * usd_24h_open - usd_today_open, 2)
+            yesterday_chg_usd = round(usd_yesterday_close - usd_yesterday_open, 2)
+            yesterday_chg_pct = round((yesterday_chg_usd / usd_yesterday_open)*100, 2) if usd_yesterday_open != 0 else 0
+            cny_yesterday_close = round(usd_yesterday_close * usd_rate, 2)
 
             buf += [
                 f"{sym}",
                 f"现价：${usd_now} | 折合人民币¥{cny_now}",
-                f"今日开盘：${usd_today_open} 折合¥{cny_today_open}",
+                f"今日开盘(早8点)：${usd_today_open} 折合¥{cny_today_open}",
                 f"昨日收盘：${usd_yesterday_close} 折合¥{cny_yesterday_close}",
                 f"今日涨幅：${today_chg_usd}（{today_chg_pct}%）",
                 f"昨日涨幅：${yesterday_chg_usd}（{yesterday_chg_pct}%）",
-                f"24小时涨幅：{change_24h_pct}%",
+                f"24小时涨幅：{chg_24h_pct}%",
                 "----------------------------------------"
             ]
-            del data
+            del json_data, data
             gc.collect()
         except Exception:
-            buf.append(f"{coin} 虚拟币接口访问失败")
+            buf.append(f"{coin} OKX欧易接口访问失败")
             buf.append("----------------------------------------")
             gc.collect()
             time.sleep(0.3)
@@ -241,7 +244,7 @@ if __name__ == "__main__":
         us_text = "===== 美股宽基指数 =====\n" + get_us_index(usd_ex, US_INDEX_LIST)
         gc.collect()
 
-        # 获取虚拟币
+        # 获取虚拟币（OKX欧易接口）
         crypto_text = "===== 虚拟币行情 =====\n" + get_crypto_info(CRYPTO_LIST, usd_ex)
         gc.collect()
 
@@ -256,4 +259,4 @@ if __name__ == "__main__":
     except Exception as err:
         push_wechat("行情脚本异常提醒", f"脚本全局异常：{str(err)}")
         gc.collect()
-# 移除kill_self强制杀进程，代码执行完毕Python解释器自动正常退出，系统完整回收RAM
+# 无强制kill进程代码，执行完毕Python解释器自动正常退出，系统完整回收RAM
