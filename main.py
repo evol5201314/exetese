@@ -1,7 +1,7 @@
 import requests
 import time
 
-# ====================== 【顶部统一配置区，所有标的在这里增删】 ======================
+# ====================== 顶部配置区 ======================
 PUSH_TOKEN = "cdc7db6c36da46c1b877543016be3cba"
 TIMEOUT = 12
 
@@ -9,13 +9,12 @@ TIMEOUT = 12
 US_INDEX_LIST = [
     "int_nasdaq",    # 纳斯达克
     "int_sp500"      # 标普500
-    # "int_dji"       # 道琼斯（取消注释启用）
 ]
 
-# 虚拟币配置 coingecko标准id：bitcoin=BTC ethereum=ETH
+# 虚拟币 coingecko id
 CRYPTO_LIST = ["bitcoin", "ethereum"]
 
-# 黄金行情数据源
+# 黄金数据源
 API_LIST = [
     "https://api.freejk.com/shuju/jinjia/",
     "https://xaus.com/api/v1/spot",
@@ -24,14 +23,12 @@ API_LIST = [
 ETF_CODE = "518880"
 ETF_GRAM_PER_SHARE = 0.01
 
-# 全局请求头
 HEADERS = {
     "User-Agent": "Mozilla/5.0 Linux Chrome/124.0 Safari/537.36",
     "Referer": "http://finance.sina.com.cn"
 }
-# ==============================================================================
+# =======================================================
 
-# 微信推送函数
 def push_wechat(title, content):
     try:
         requests.post(
@@ -42,7 +39,7 @@ def push_wechat(title, content):
     except Exception as e:
         print("推送失败:", e)
 
-# 获取金价、美元兑人民币汇率
+# 获取黄金与美元汇率
 def get_gold_data():
     for api in API_LIST:
         try:
@@ -70,7 +67,7 @@ def get_gold_data():
             time.sleep(1)
     raise Exception("所有金价接口全部失效")
 
-# 美股指数批量行情
+# 美股指数（原版不变）
 def get_us_index(rate, index_list):
     code_str = ",".join(index_list)
     url = f"http://hq.sinajs.cn/list={code_str}"
@@ -83,7 +80,7 @@ def get_us_index(rate, index_list):
                 continue
             data = line.split('"')[1].split(",")
             if len(data) < 4:
-                buf.extend(["指数数据残缺，跳过", "-"*30])
+                buf.extend(["指数数据残缺，跳过", "----------------------------------------"])
                 continue
             try:
                 idx_name = data[0]
@@ -92,7 +89,7 @@ def get_us_index(rate, index_list):
                 change_pct = float(data[3])
                 yesterday_point = float(data[4]) if len(data)>=5 else now
             except ValueError:
-                buf.extend([f"{data[0]} 数值解析失败", "-"*30])
+                buf.extend([f"{data[0]} 数值解析失败", "----------------------------------------"])
                 continue
             last_close = round(now - change, 2)
             day_chg = round(last_close - yesterday_point, 2)
@@ -104,13 +101,13 @@ def get_us_index(rate, index_list):
                 f"昨收：{last_close} 点",
                 f"当日涨跌：{change}点（{change_pct}%）",
                 f"前日涨跌：{day_chg}点（{day_pct}%）",
-                "-"*30
+                "----------------------------------------"
             ]
     except Exception as e:
         buf.append(f"美股指数接口失败：{e}")
     return "\n".join(buf)
 
-# 虚拟币函数：对齐美股格式，新增昨日价格、前日涨跌
+# 虚拟币重写：文字完全对齐美股，区分当日/前日涨跌
 def get_crypto_info(crypto_list, usd_rate):
     buf = []
     coin_ids = ",".join(crypto_list)
@@ -134,30 +131,37 @@ def get_crypto_info(crypto_list, usd_rate):
     coin_data = resp.json()
     for coin in coin_data:
         symbol = coin["symbol"].upper()
-        usd_price = round(coin["current_price"], 2)
-        cny_price = round(usd_price * usd_rate, 2)
-        change_24h = round(coin["price_change_percentage_24h"], 2)
-        change_usd = round(coin["price_change_24h"], 2)
-        yesterday_usd = round(usd_price - change_usd, 2)
-        yesterday_cny = round(yesterday_usd * usd_rate, 2)
+        usd_now = round(coin["current_price"], 2)
+        usd_yesterday = round(usd_now - coin["price_change_24h"], 2)
+        usd_before_yesterday = round(usd_yesterday - (coin["price_change_24h"] / (1 + coin["price_change_percentage_24h"] / 100)), 2)
+
+        cny_now = round(usd_now * usd_rate, 2)
+        cny_yesterday = round(usd_yesterday * usd_rate, 2)
+
+        # 当日涨跌（24h区间）
+        change_now_usd = round(coin["price_change_24h"], 2)
+        change_now_pct = round(coin["price_change_percentage_24h"], 2)
+        # 前日涨跌（昨日相对前日）
+        change_prev_usd = round(usd_yesterday - usd_before_yesterday, 2)
+        change_prev_pct = round((change_prev_usd / usd_before_yesterday)*100, 2) if usd_before_yesterday != 0 else 0
+
         buf += [
             f"{symbol}",
-            f"现价：${usd_price} | 折合人民币¥{cny_price}",
-            f"昨收：${yesterday_usd} 折合¥{yesterday_cny}",
-            f"24小时涨跌：${change_usd}（{change_24h}%）",
-            "-"*30
+            f"现价：${usd_now} | 折合人民币¥{cny_now}",
+            f"昨收：${usd_yesterday} 折合¥{cny_yesterday}",
+            f"当日涨跌：${change_now_usd}（{change_now_pct}%）",
+            f"前日涨跌：${change_prev_usd}（{change_prev_pct}%）",
+            "----------------------------------------"
         ]
     return "\n".join(buf)
 
 if __name__ == "__main__":
     try:
-        # 获取黄金与汇率
         gold_data = get_gold_data()
         usd_rate = gold_data["usd_cny_rate"]
         gram_price = gold_data["cny_gram"]
         etf_theory = round(gram_price * ETF_GRAM_PER_SHARE, 2)
 
-        # 黄金板块
         gold_text = "\n".join([
             "===== 黄金行情 =====",
             f"数据源：{gold_data['source']}",
@@ -165,15 +169,12 @@ if __name__ == "__main__":
             f"美元汇率：1USD = {usd_rate}",
             f"国内金价：{gram_price} 元/克",
             f"{ETF_CODE}理论净值：{etf_theory} 元/份",
-            "-" * 40
+            "----------------------------------------"
         ])
 
-        # 美股指数
         us_text = "===== 美股宽基指数 =====\n" + get_us_index(usd_rate, US_INDEX_LIST)
-        # 虚拟币（对齐统一格式，新增昨日价格、前日涨跌）
         crypto_text = "===== 虚拟币行情 =====\n" + get_crypto_info(CRYPTO_LIST, usd_rate)
 
-        # 合并推送内容（已删除股票板块）
         full_msg = f"{gold_text}\n{us_text}\n{crypto_text}"
         push_wechat("黄金+美股+BTC/ETH行情播报", full_msg)
         print("推送完成！\n", full_msg)
