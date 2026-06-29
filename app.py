@@ -1,0 +1,685 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+============================================================
+🐍 脚本面板 - 运行环境说明
+============================================================
+
+【运行环境】
+  系统: OpenWrt (路由器)
+  架构: ARM64 (aarch64) / MIPS / x86 均可
+  闪存: 有限 (约 10-20MB 可用)
+  内存: 128MB
+
+【已安装的包】
+  ✅ python3-light      - Python 精简版 (含 subprocess 模块)
+  ✅ flask              - Web 框架 (面板核心)
+  ✅ python3-requests   - HTTP 客户端 (GitHub API 同步)
+  ✅ libustream-mbedtls - HTTPS 支持 (requests 依赖)
+
+【python3-light 已包含的模块】✅ 可用
+  - os, sys, json, time, datetime
+  - subprocess  ✅ (已验证存在，支持运行脚本)
+  - threading   ✅
+  - socket      ✅ (端口检测)
+  - signal      ✅ (进程管理)
+  - shutil      ✅ (文件操作)
+
+【python3-light 不包含的模块】❌ 不可用
+  - zipfile   ❌ (已用 GitHub API 替代，无需解压 ZIP)
+  - tempfile  ❌ (已用内存缓存/直接写入替代)
+  - pydoc     ❌ (未使用)
+  - tkinter   ❌ (未使用)
+
+【面板功能与依赖对照】
+  ┌─────────────────┬──────────────────┬────────────────────────────┐
+  │ 功能             │ 依赖模块         │ 状态                       │
+  ├─────────────────┼──────────────────┼────────────────────────────┤
+  │ Web 界面显示     │ flask, os, sys  │ ✅ 正常                    │
+  │ 脚本列表         │ os, json, stat  │ ✅ 正常                    │
+  │ 新建脚本         │ os, json        │ ✅ 正常                    │
+  │ 编辑脚本         │ os, json        │ ✅ 正常                    │
+  │ 删除脚本         │ os, json        │ ✅ 正常                    │
+  │ 上传脚本         │ shutil, os      │ ✅ 正常                    │
+  │ 运行脚本 (核心)  │ subprocess      │ ✅ 正常 (python3-light 已含)│
+  │ 查看日志         │ os, json        │ ✅ 正常                    │
+  │ GitHub 同步      │ requests, json  │ ✅ 正常 (无需 zipfile)     │
+  │ 端口自动清理     │ subprocess, os  │ ✅ 正常                    │
+  │ 配置自动保存     │ os, sys         │ ✅ 正常 (修改自身脚本)      │
+  │ 面板自动重启     │ subprocess, os  │ ✅ 正常                    │
+  └─────────────────┴──────────────────┴────────────────────────────┘
+
+【同步功能说明】
+  使用 GitHub API 直接获取仓库文件列表，逐个下载 .py 文件
+  不依赖 zipfile / tempfile，适配 python3-light
+
+【修改代码时注意事项】
+  1. 新增功能时，请确认依赖模块在 python3-light 中是否存在
+  2. 如需使用 zipfile/tempfile，请改用 requests 或 os 替代
+  3. 如需添加新的 pip 包，请确认闪存空间充足 (可用 opkg list 查看)
+  4. 修改 tongbukuang 变量会自动保存到自身脚本，无需额外配置文件
+
+============================================================
+"""
+
+import os
+import sys
+import json
+import subprocess
+import threading
+import shutil
+import time
+import socket
+import signal
+from datetime import datetime
+from flask import Flask, render_template_string, jsonify, request
+
+app = Flask(__name__)
+
+SCRIPTS_DIR = "/root/scripts"
+STATUS_FILE = "/tmp/script_status.json"
+HISTORY_FILE = "/tmp/script_history.json"
+
+# ========== 同步框默认内容（修改后会自动保存到自身脚本） ==========
+# 格式: https://{token}@github.com/{用户名}/{仓库名}
+# 首次运行会使用下面的默认值，点击同步后可修改并自动保存
+tongbukuang = "https://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@github.com/evol5201314/exetese"
+
+def init_files():
+    os.makedirs(SCRIPTS_DIR, exist_ok=True)
+    os.makedirs("/root/dashboard", exist_ok=True)
+    for f in [STATUS_FILE, HISTORY_FILE]:
+        if not os.path.exists(f):
+            with open(f, 'w') as fp:
+                json.dump({}, fp)
+
+# ========== GitHub 地址解析 ==========
+def parse_github_url(raw_url):
+    """
+    解析 GitHub 仓库地址，支持以下格式：
+    - https://github.com/用户名/仓库名
+    - https://token@github.com/用户名/仓库名
+    - https://github.com/用户名/仓库名/tree/分支名
+    - https://token@github.com/用户名/仓库名/tree/分支名
+    返回: {'username': 'xxx', 'repo': 'xxx', 'branch': 'main', 'token': 'xxx'}
+    """
+    raw = raw_url.strip()
+    if not raw:
+        return None
+    
+    token = ''
+    if raw.startswith('https://'):
+        rest = raw[8:]
+    elif raw.startswith('http://'):
+        rest = raw[7:]
+    else:
+        rest = raw
+    
+    if '@' in rest and 'github.com' in rest:
+        parts = rest.split('@')
+        token = parts[0]
+        rest = parts[1]
+    
+    if rest.startswith('github.com/'):
+        rest = rest[11:]
+    elif rest.startswith('www.github.com/'):
+        rest = rest[15:]
+    else:
+        return None
+    
+    branch = 'main'
+    if '/tree/' in rest:
+        parts = rest.split('/tree/')
+        repo_part = parts[0]
+        branch = parts[1].split('/')[0]
+        rest = repo_part
+    
+    parts = rest.split('/')
+    if len(parts) >= 2:
+        return {
+            'username': parts[0],
+            'repo': parts[1],
+            'branch': branch,
+            'token': token
+        }
+    return None
+
+# ========== 配置自保存（修改 tongbukuang 变量） ==========
+def update_self_tongbukuang(new_value):
+    """
+    修改自身脚本中的 tongbukuang 变量值
+    使用行遍历替换，不依赖 re 模块
+    """
+    script_path = os.path.abspath(__file__)
+    try:
+        with open(script_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        new_lines = []
+        for line in lines:
+            stripped = line.lstrip()
+            if stripped.startswith('tongbukuang ='):
+                indent = line[:len(line) - len(line.lstrip())]
+                new_lines.append(f'{indent}tongbukuang = "{new_value}"\n')
+            else:
+                new_lines.append(line)
+        with open(script_path, 'w', encoding='utf-8') as f:
+            f.writelines(new_lines)
+        return True
+    except Exception as e:
+        print(f"更新自身配置失败: {e}")
+        return False
+
+def restart_self():
+    """重启当前 Flask 应用（新进程启动后退出当前）"""
+    subprocess.Popen([sys.executable, __file__] + sys.argv[1:])
+    os._exit(0)
+
+# ========== 端口清理（始终使用 5000） ==========
+def kill_process_on_port(port=5000):
+    """
+    查找占用 5000 端口的进程并强制杀掉
+    支持 netstat、lsof 两种方式
+    """
+    try:
+        cmd = f"netstat -tulpn 2>/dev/null | grep ':{port} ' | awk '{{print $7}}' | cut -d'/' -f1"
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        pids = result.stdout.strip().split()
+        if not pids:
+            cmd = f"lsof -t -i:{port} 2>/dev/null"
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            pids = result.stdout.strip().split()
+        if pids:
+            for pid in pids:
+                try:
+                    os.kill(int(pid), signal.SIGKILL)
+                    print(f"✅ 已清理占用端口 {port} 的残留进程 (PID: {pid})")
+                except:
+                    pass
+            return True
+        else:
+            print(f"✅ 端口 {port} 空闲")
+            return True
+    except Exception as e:
+        print(f"⚠️ 端口检测跳过: {e}")
+        return True
+
+# ========== 获取脚本列表 ==========
+def get_scripts():
+    scripts = []
+    if not os.path.exists(SCRIPTS_DIR):
+        return scripts
+    with open(STATUS_FILE, 'r') as f:
+        status_data = json.load(f)
+    with open(HISTORY_FILE, 'r') as f:
+        history_data = json.load(f)
+    for fn in sorted(os.listdir(SCRIPTS_DIR)):
+        if fn.endswith('.py'):
+            p = os.path.join(SCRIPTS_DIR, fn)
+            st = os.stat(p)
+            s = status_data.get(fn, {'status': 'idle'})
+            h = history_data.get(fn, [])
+            last_run = h[-1]['time'] if h else None
+            scripts.append({
+                'name': fn,
+                'size': st.st_size,
+                'mtime': datetime.fromtimestamp(st.st_mtime).strftime('%Y-%m-%d %H:%M:%S'),
+                'status': s.get('status', 'idle'),
+                'last_run': last_run,
+                'history_count': len(h)
+            })
+    return scripts
+
+@app.route('/')
+def index():
+    return render_template_string(HTML)
+
+@app.route('/api/scripts')
+def api_scripts():
+    return jsonify(get_scripts())
+
+@app.route('/api/sync_config')
+def sync_config():
+    return jsonify({'tongbukuang': tongbukuang})
+
+@app.route('/api/run/<name>', methods=['POST'])
+def run_script(name):
+    path = os.path.join(SCRIPTS_DIR, name)
+    if not os.path.exists(path):
+        return jsonify({'error': '脚本不存在'}), 404
+    with open(STATUS_FILE, 'r') as f:
+        status_data = json.load(f)
+    status_data[name] = {'status': 'running'}
+    with open(STATUS_FILE, 'w') as f:
+        json.dump(status_data, f)
+    
+    def bg_run():
+        start = datetime.now().isoformat()
+        try:
+            result = subprocess.run(
+                ['python3', path],
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+            output = result.stdout + result.stderr
+            status = 'success' if result.returncode == 0 else 'failed'
+        except subprocess.TimeoutExpired:
+            output = '⏱ 执行超时（300秒）'
+            status = 'timeout'
+        except Exception as e:
+            output = f'❌ 异常: {str(e)}'
+            status = 'error'
+        
+        with open(STATUS_FILE, 'r') as f:
+            status_data = json.load(f)
+        status_data[name] = {'status': status, 'last_output': output[:10000]}
+        with open(STATUS_FILE, 'w') as f:
+            json.dump(status_data, f)
+        
+        with open(HISTORY_FILE, 'r') as f:
+            history = json.load(f)
+        history.setdefault(name, []).append({
+            'time': start,
+            'status': status,
+            'output': output[:500]
+        })
+        if len(history[name]) > 50:
+            history[name] = history[name][-50:]
+        with open(HISTORY_FILE, 'w') as f:
+            json.dump(history, f)
+    
+    threading.Thread(target=bg_run, daemon=True).start()
+    return jsonify({'message': f'✅ {name} 已开始执行'})
+
+@app.route('/api/log/<name>')
+def get_log(name):
+    with open(STATUS_FILE, 'r') as f:
+        status_data = json.load(f)
+    s = status_data.get(name, {})
+    return jsonify({
+        'status': s.get('status', 'idle'),
+        'output': s.get('last_output', '暂无输出')
+    })
+
+@app.route('/api/new', methods=['POST'])
+def new_script():
+    data = request.json
+    name = data.get('name', '').strip()
+    content = data.get('content', '')
+    if not name:
+        return jsonify({'error': '文件名不能为空'}), 400
+    if not name.endswith('.py'):
+        name += '.py'
+    if '/' in name or '\\' in name:
+        return jsonify({'error': '文件名不合法'}), 400
+    path = os.path.join(SCRIPTS_DIR, name)
+    if os.path.exists(path):
+        return jsonify({'error': f'文件 {name} 已存在'}), 400
+    with open(path, 'w') as f:
+        f.write(content)
+    return jsonify({'message': f'✅ 脚本 {name} 创建成功'})
+
+@app.route('/api/get/<name>')
+def get_script(name):
+    if '/' in name or '\\' in name:
+        return jsonify({'error': '文件名不合法'}), 400
+    path = os.path.join(SCRIPTS_DIR, name)
+    if not os.path.exists(path):
+        return jsonify({'error': '脚本不存在'}), 404
+    with open(path, 'r') as f:
+        content = f.read()
+    return jsonify({'name': name, 'content': content})
+
+@app.route('/api/edit/<name>', methods=['POST'])
+def edit_script(name):
+    if '/' in name or '\\' in name:
+        return jsonify({'error': '文件名不合法'}), 400
+    path = os.path.join(SCRIPTS_DIR, name)
+    if not os.path.exists(path):
+        return jsonify({'error': '脚本不存在'}), 404
+    content = request.json.get('content', '')
+    with open(path, 'w') as f:
+        f.write(content)
+    return jsonify({'message': f'✅ {name} 保存成功'})
+
+@app.route('/api/delete/<name>', methods=['POST'])
+def delete_script(name):
+    if '/' in name or '\\' in name:
+        return jsonify({'error': '文件名不合法'}), 400
+    path = os.path.join(SCRIPTS_DIR, name)
+    if not os.path.exists(path):
+        return jsonify({'error': '脚本不存在'}), 404
+    os.remove(path)
+    with open(STATUS_FILE, 'r') as f:
+        status_data = json.load(f)
+    status_data.pop(name, None)
+    with open(STATUS_FILE, 'w') as f:
+        json.dump(status_data, f)
+    return jsonify({'message': f'✅ {name} 已删除'})
+
+@app.route('/api/upload', methods=['POST'])
+def upload_script():
+    if 'file' not in request.files:
+        return jsonify({'error': '没有文件'}), 400
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': '未选择文件'}), 400
+    if not file.filename.endswith('.py'):
+        return jsonify({'error': '只允许上传 .py 文件'}), 400
+    if '/' in file.filename or '\\' in file.filename:
+        return jsonify({'error': '文件名不合法'}), 400
+    path = os.path.join(SCRIPTS_DIR, file.filename)
+    if os.path.exists(path):
+        return jsonify({'error': f'文件 {file.filename} 已存在'}), 400
+    file.save(path)
+    return jsonify({'message': f'✅ {file.filename} 上传成功'})
+
+# ========== GitHub 同步（通过 API，无需 zipfile） ==========
+@app.route('/api/sync_github', methods=['POST'])
+def sync_github():
+    data = request.json or {}
+    tongbukuang_new = data.get('tongbukuang', '').strip()
+    
+    if not tongbukuang_new:
+        return jsonify({'error': '请输入仓库地址'}), 400
+    
+    parsed = parse_github_url(tongbukuang_new)
+    if not parsed:
+        return jsonify({'error': '无法解析仓库地址，请使用格式: https://github.com/用户名/仓库名'}), 400
+    
+    username = parsed['username']
+    repo = parsed['repo']
+    branch = parsed.get('branch', 'main')
+    token = parsed.get('token', '')
+    
+    api_url = f"https://api.github.com/repos/{username}/{repo}/contents?ref={branch}"
+    headers = {}
+    if token:
+        headers['Authorization'] = f'token {token}'
+    
+    try:
+        import requests as reqs
+        response = reqs.get(api_url, headers=headers, timeout=30)
+        if response.status_code == 401:
+            return jsonify({'error': '认证失败，请检查 Token 是否正确'}), 401
+        if response.status_code == 404:
+            return jsonify({'error': '仓库或分支不存在，请检查地址'}), 404
+        if response.status_code != 200:
+            return jsonify({'error': f'API 请求失败: {response.status_code}'}), 500
+        
+        files = response.json()
+        py_files = [f for f in files if f.get('name', '').endswith('.py') and f.get('type') == 'file']
+        
+        if not py_files:
+            return jsonify({'message': '⚠️ 仓库中未找到 .py 文件'})
+        
+        downloaded = []
+        for file_info in py_files:
+            file_name = file_info['name']
+            download_url = file_info['download_url']
+            if not download_url:
+                continue
+            try:
+                file_resp = reqs.get(download_url, headers=headers, timeout=30)
+                if file_resp.status_code == 200:
+                    target_path = os.path.join(SCRIPTS_DIR, file_name)
+                    with open(target_path, 'w', encoding='utf-8') as f:
+                        f.write(file_resp.text)
+                    downloaded.append(file_name)
+            except Exception as e:
+                print(f"下载 {file_name} 出错: {e}")
+        
+        if downloaded:
+            config_updated = False
+            if tongbukuang_new != tongbukuang:
+                if update_self_tongbukuang(tongbukuang_new):
+                    config_updated = True
+            
+            response_msg = f'✅ 同步成功，共 {len(downloaded)} 个脚本'
+            if config_updated:
+                response_msg += '；配置已更新，面板将自动重启...'
+                def restart_later():
+                    time.sleep(1)
+                    restart_self()
+                threading.Thread(target=restart_later, daemon=True).start()
+                return jsonify({'message': response_msg, 'restart': True})
+            else:
+                return jsonify({'message': response_msg})
+        else:
+            return jsonify({'message': '⚠️ 未成功下载任何文件'})
+            
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# ==================== HTML 模板 ====================
+HTML = '''<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🐍 脚本面板</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f0f2f5;padding:16px}
+.container{max-width:1200px;margin:0 auto}
+.header{background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;padding:20px 24px;border-radius:12px;margin-bottom:20px}
+.header h1{font-size:22px}.header .sub{opacity:.8;font-size:13px;margin-top:4px}
+.stats{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px}
+.stat-card{background:#fff;padding:12px 20px;border-radius:10px;box-shadow:0 1px 4px rgba(0,0,0,.06);flex:1;min-width:80px}
+.stat-card .num{font-size:24px;font-weight:700;color:#333}
+.stat-card .label{font-size:12px;color:#999}
+.actions-bar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}
+.actions-bar button{padding:8px 18px;border:none;border-radius:8px;cursor:pointer;font-size:14px;font-weight:500}
+.btn-new{background:#667eea;color:#fff}.btn-new:hover{background:#5a6fd6}
+.btn-upload{background:#4caf50;color:#fff}.btn-upload:hover{background:#43a047}
+.btn-sync{background:#ff6b6b;color:#fff}.btn-sync:hover{background:#e55a5a}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}
+.card{background:#fff;border-radius:10px;padding:16px 18px;box-shadow:0 1px 4px rgba(0,0,0,.06);border-left:4px solid #ddd}
+.card.idle{border-left-color:#90a4ae}
+.card.running{border-left-color:#ff9800;animation:pulse 1.2s infinite}
+.card.success{border-left-color:#4caf50}
+.card.failed{border-left-color:#f44336}
+.card.timeout{border-left-color:#ff5722}
+.card.error{border-left-color:#9c27b0}
+@keyframes pulse{0%,100%{border-left-color:#ff9800}50%{border-left-color:#ffcc80}}
+.card .top{display:flex;justify-content:space-between;align-items:center}
+.card .name{font-weight:600;font-size:15px;word-break:break-all}
+.badge{font-size:11px;padding:2px 12px;border-radius:20px;font-weight:500;flex-shrink:0;margin-left:10px}
+.badge.idle{background:#eceff1;color:#546e7a}
+.badge.running{background:#fff3e0;color:#e65100}
+.badge.success{background:#e8f5e9;color:#1b5e20}
+.badge.failed{background:#fce4ec;color:#b71c1c}
+.badge.timeout{background:#fbe9e7;color:#bf360c}
+.badge.error{background:#f3e5f5;color:#4a148c}
+.card .info{margin-top:10px;font-size:13px;color:#666;line-height:1.6}
+.card .info .lbl{color:#999}
+.card .actions{margin-top:12px;display:flex;gap:6px;flex-wrap:wrap}
+.card .actions button{padding:5px 14px;border:none;border-radius:6px;font-size:13px;cursor:pointer;font-weight:500}
+.btn-run{background:#667eea;color:#fff}
+.btn-run:hover{background:#5a6fd6}
+.btn-run:disabled{opacity:.5;cursor:not-allowed}
+.btn-edit{background:#ff9800;color:#fff}
+.btn-edit:hover{background:#f57c00}
+.btn-del{background:#f44336;color:#fff}
+.btn-del:hover{background:#d32f2f}
+.btn-log{background:#eceff1;color:#333}
+.btn-log:hover{background:#d5d9de}
+.modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:999;justify-content:center;align-items:center}
+.modal.active{display:flex}
+.modal-box{background:#fff;border-radius:14px;padding:24px;max-width:720px;width:94%;max-height:85vh;overflow-y:auto}
+.modal-box h2{font-size:17px;margin-bottom:4px}
+.modal-box .meta{font-size:13px;color:#888;margin-bottom:12px}
+.modal-box pre{background:#1e1e1e;color:#d4d4d4;padding:14px;border-radius:8px;font-size:12px;line-height:1.5;max-height:400px;overflow:auto;white-space:pre-wrap;word-break:break-all}
+.close{float:right;font-size:24px;cursor:pointer;color:#888}
+.close:hover{color:#333}
+.empty{padding:60px 20px;text-align:center;color:#999}
+.refresh-btn{background:#fff;border:1px solid #ddd;padding:6px 16px;border-radius:8px;cursor:pointer;font-size:13px}
+.refresh-btn:hover{background:#f5f5f5}
+input, textarea{width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;margin:6px 0;font-size:14px;font-family:inherit}
+textarea{min-height:180px;font-family:monospace;resize:vertical}
+.modal-box .form-actions{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+.modal-box .form-actions button{padding:6px 20px;border:none;border-radius:6px;cursor:pointer;font-weight:500}
+.btn-primary{background:#667eea;color:#fff}
+.btn-primary:hover{background:#5a6fd6}
+.btn-secondary{background:#eceff1;color:#333}
+.btn-secondary:hover{background:#d5d9de}
+.sync-input-group{display:flex;flex-direction:column;gap:4px;margin:8px 0}
+.sync-input-group label{font-weight:500;font-size:14px;color:#555}
+.sync-input-group input{width:100%;padding:8px 12px;border:1px solid #ddd;border-radius:6px;font-size:14px;font-family:monospace}
+.sync-input-group .hint{font-size:12px;color:#999;margin-top:2px}
+@media(max-width:600px){.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="container">
+<div class="header">
+<h1>🐍 脚本面板</h1>
+<div class="sub">📁 /root/scripts &nbsp;|&nbsp; ⏱ 自动刷新 10s</div>
+</div>
+<div class="stats" id="stats">
+<div class="stat-card"><div class="num" id="total">0</div><div class="label">📄 总数</div></div>
+<div class="stat-card"><div class="num" id="running">0</div><div class="label">🔄 运行中</div></div>
+<div class="stat-card"><div class="num" id="success">0</div><div class="label">✅ 成功</div></div>
+<div class="stat-card"><div class="num" id="failed">0</div><div class="label">❌ 失败</div></div>
+<div class="stat-card" style="flex:0"><button class="refresh-btn" onclick="load()">🔄 刷新</button></div>
+</div>
+<div class="actions-bar">
+<button class="btn-new" onclick="showNewModal()">➕ 新建</button>
+<button class="btn-upload" onclick="document.getElementById('fileInput').click()">📤 上传</button>
+<button class="btn-sync" onclick="showSyncModal()">📥 同步</button>
+<input type="file" id="fileInput" accept=".py" style="display:none" onchange="uploadFile(this)">
+</div>
+<div class="grid" id="grid"></div>
+</div>
+
+<!-- 新建脚本弹窗 -->
+<div class="modal" id="newModal"><div class="modal-box">
+<span class="close" onclick="closeNew()">&times;</span>
+<h2>📝 新建脚本</h2>
+<div style="margin:12px 0"><label>文件名（.py）</label><input type="text" id="newName" placeholder="例如: monitor.py"></div>
+<div><label>代码内容</label><textarea id="newContent" placeholder="# 在此编写 Python 代码"></textarea></div>
+<div class="form-actions"><button class="btn-primary" onclick="createScript()">💾 保存</button><button class="btn-secondary" onclick="closeNew()">取消</button></div>
+</div></div>
+
+<!-- 编辑脚本弹窗 -->
+<div class="modal" id="editModal"><div class="modal-box">
+<span class="close" onclick="closeEdit()">&times;</span>
+<h2>✏️ 编辑脚本</h2>
+<div style="margin:12px 0"><label id="editFileName">文件名</label><textarea id="editContent"></textarea></div>
+<div class="form-actions"><button class="btn-primary" onclick="saveEdit()">💾 保存</button><button class="btn-secondary" onclick="closeEdit()">取消</button></div>
+</div></div>
+
+<!-- 同步脚本弹窗 -->
+<div class="modal" id="syncModal"><div class="modal-box">
+<span class="close" onclick="closeSync()">&times;</span>
+<h2>📥 从 GitHub 同步脚本</h2>
+<div class="sync-input-group">
+<label>仓库地址（含 Token）</label>
+<input type="text" id="syncTongbukuang" placeholder="https://token@github.com/用户名/仓库名">
+<div class="hint">💡 格式：https://{token}@github.com/{用户名}/{仓库名} 或直接输入仓库地址</div>
+</div>
+<div class="form-actions"><button class="btn-primary" onclick="doSync()">📥 开始同步</button><button class="btn-secondary" onclick="closeSync()">取消</button></div>
+</div></div>
+
+<!-- 日志弹窗 -->
+<div class="modal" id="modal"><div class="modal-box"><span class="close" onclick="closeModal()">&times;</span><h2 id="mTitle">日志</h2><div class="meta" id="mMeta"></div><pre id="mContent">暂无</pre></div></div>
+
+<script>
+function st(s){const map={idle:'待执行',running:'运行中',success:'成功',failed:'失败',timeout:'超时',error:'错误'};return map[s]||s}
+function badge(s){return`<span class="badge ${s}">${st(s)}</span>`}
+function load(){fetch('/api/scripts').then(r=>r.json()).then(data=>{
+const g=document.getElementById('grid')
+if(!data||!data.length){g.innerHTML='<div class="empty">📂 暂无脚本<br><small>点击 "新建"、"上传" 或 "同步" 添加脚本</small></div>';updateStats(0,0,0,0);return}
+let rn=0,su=0,fa=0
+g.innerHTML=data.map(s=>{const st=s.status||'idle';if(st==='running')rn++;if(st==='success')su++;if(['failed','timeout','error'].includes(st))fa++
+return`<div class="card ${st}"><div class="top"><span class="name">${s.name}</span>${badge(st)}</div>
+<div class="info"><span class="lbl">📏</span> ${(s.size/1024).toFixed(1)}KB &nbsp; <span class="lbl">🕐</span> ${s.mtime}<br><span class="lbl">⏱</span> ${s.last_run||'从未运行'} &nbsp; <span class="lbl">📋</span> ${s.history_count||0}次</div>
+<div class="actions"><button class="btn-run" onclick="run('${s.name}')" ${st==='running'?'disabled':''}>▶ 运行</button><button class="btn-edit" onclick="showEdit('${s.name}')">✏️ 编辑</button><button class="btn-del" onclick="del('${s.name}')">🗑 删除</button><button class="btn-log" onclick="log('${s.name}')">📄 日志</button></div></div>`
+}).join('')
+updateStats(data.length,rn,su,fa)
+})}
+function updateStats(total,rn,su,fa){document.getElementById('total').textContent=total;document.getElementById('running').textContent=rn;document.getElementById('success').textContent=su;document.getElementById('failed').textContent=fa}
+function run(n){if(!confirm(`确定执行 "${n}" ?`))return;fetch(`/api/run/${encodeURIComponent(n)}`,{method:'POST'}).then(r=>r.json()).then(d=>{alert(d.message||d.error);load()})}
+function log(n){fetch(`/api/log/${encodeURIComponent(n)}`).then(r=>r.json()).then(d=>{document.getElementById('mTitle').textContent='📄 '+n;document.getElementById('mMeta').textContent='状态: '+st(d.status);document.getElementById('mContent').textContent=d.output||'暂无输出';document.getElementById('modal').classList.add('active')})}
+function closeModal(){document.getElementById('modal').classList.remove('active')}
+document.getElementById('modal').addEventListener('click',function(e){if(e.target===this)closeModal()})
+
+function showNewModal(){document.getElementById('newModal').classList.add('active')}
+function closeNew(){document.getElementById('newModal').classList.remove('active')}
+function createScript(){
+const name=document.getElementById('newName').value.trim()
+const content=document.getElementById('newContent').value
+if(!name){alert('请输入文件名');return}
+if(!content){alert('代码内容不能为空');return}
+fetch('/api/new',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,content})})
+.then(r=>r.json()).then(d=>{alert(d.message||d.error);if(d.message){closeNew();document.getElementById('newName').value='';document.getElementById('newContent').value='';load()}})
+}
+
+let editingName=''
+function showEdit(name){
+editingName=name
+document.getElementById('editFileName').textContent='📄 '+name
+fetch(`/api/get/${encodeURIComponent(name)}`).then(r=>r.json()).then(d=>{
+if(d.error){alert(d.error);return}
+document.getElementById('editContent').value=d.content||''
+document.getElementById('editModal').classList.add('active')
+})
+}
+function closeEdit(){document.getElementById('editModal').classList.remove('active');editingName=''}
+function saveEdit(){
+const content=document.getElementById('editContent').value
+if(!content){alert('内容不能为空');return}
+fetch(`/api/edit/${encodeURIComponent(editingName)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content})})
+.then(r=>r.json()).then(d=>{alert(d.message||d.error);if(d.message){closeEdit();load()}})
+}
+
+function del(name){if(!confirm(`确定删除 "${name}" 吗？`))return;fetch(`/api/delete/${encodeURIComponent(name)}`,{method:'POST'}).then(r=>r.json()).then(d=>{alert(d.message||d.error);load()})}
+
+function uploadFile(input){
+if(!input.files.length)return
+const file=input.files[0]
+const formData=new FormData()
+formData.append('file',file)
+fetch('/api/upload',{method:'POST',body:formData})
+.then(r=>r.json()).then(d=>{alert(d.message||d.error);if(d.message)load()})
+input.value=''
+}
+
+function showSyncModal(){
+document.getElementById('syncModal').classList.add('active')
+fetch('/api/sync_config').then(r=>r.json()).then(data=>{
+document.getElementById('syncTongbukuang').value=data.tongbukuang||''
+})
+}
+function closeSync(){document.getElementById('syncModal').classList.remove('active')}
+function doSync(){
+const val=document.getElementById('syncTongbukuang').value.trim()
+if(!val){alert('请输入仓库地址');return}
+if(!confirm(`将从以下地址同步脚本:\\n${val}\\n确定吗？`))return
+fetch('/api/sync_github',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tongbukuang:val})})
+.then(r=>r.json()).then(d=>{
+alert(d.message||d.error)
+if(d.message){
+closeSync()
+load()
+if(d.restart){
+setTimeout(function(){window.location.reload()}, 2000)
+}
+}
+})
+}
+
+load();setInterval(load,10000)
+</script>
+</body>
+</html>
+'''
+
+if __name__ == '__main__':
+    init_files()
+    # 启动前清理端口
+    print("🔍 检测端口 5000...")
+    kill_process_on_port(5000)
+    print("🚀 面板启动在 http://0.0.0.0:5000")
+    app.run(host='0.0.0.0', port=5000, debug=False)
