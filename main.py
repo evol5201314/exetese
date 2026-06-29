@@ -129,7 +129,7 @@ def get_stock_info(code_list):
     gc.collect()
     return "\n".join(buf)
 
-# 美股指数逻辑不变
+# 美股指数函数：增强容错，保证不会整块丢失
 def get_us_index(rate, idx_list):
     buf = []
     url = f"http://hq.sinajs.cn/list={','.join(idx_list)}"
@@ -163,12 +163,14 @@ def get_us_index(rate, idx_list):
                 "----------------------------------------"
             ]
         del text_lines
-    except Exception:
-        buf.append("美股指数接口请求失败")
+    except Exception as err:
+        # 接口异常时保留占位文本，不会整段消失
+        buf.append(f"美股指数接口请求失败：{str(err)}")
+        buf.append("----------------------------------------")
     gc.collect()
     return "\n".join(buf)
 
-# 虚拟币：OKX欧易公开无密钥API，原生sodUtc8=早8点今日开盘，满足三个涨幅需求
+# 虚拟币：OKX欧易公开无密钥API，原生sodUtc8=早8点今日开盘
 def get_crypto_info(coin_list, usd_rate):
     buf = []
     base_url = "https://www.okx.com/api/v5/market/ticker"
@@ -180,21 +182,21 @@ def get_crypto_info(coin_list, usd_rate):
             json_data = resp.json()
             del resp
             data = json_data["data"][0]
-            # 原生字段读取，无多余网络请求
+            # 原生字段读取
             sym = coin
             usd_now = round(float(data["last"]), 2)               # 当前现价
-            usd_today_open = round(float(data["sodUtc8"]), 2)     # UTC8点今日开盘（你要的早8点开盘价）
+            usd_today_open = round(float(data["sodUtc8"]), 2)     # UTC8点今日开盘
             usd_24h_open = round(float(data["open24h"]), 2)       # 24h滚动开盘
             # 换算人民币
             cny_now = round(usd_now * usd_rate, 2)
             cny_today_open = round(usd_today_open * usd_rate, 2)
-            # 1、今日涨幅：现价 - 今日8点开盘
+            # 今日涨幅：现价 - 今日8点开盘
             today_chg_usd = round(usd_now - usd_today_open, 2)
             today_chg_pct = round((today_chg_usd / usd_today_open)*100, 2) if usd_today_open != 0 else 0
-            # 2、24小时涨幅：现价 - 24h开盘
+            # 24小时涨幅
             chg_24h_usd = round(usd_now - usd_24h_open, 2)
             chg_24h_pct = round((chg_24h_usd / usd_24h_open)*100, 2) if usd_24h_open != 0 else 0
-            # 3、昨日涨幅：昨日全天8点开盘 → 昨日收盘（昨日收盘=今日8点开盘，昨日开盘=前一日sodUtc8，此处用24h区间反向推算和网页一致）
+            # 昨日涨幅计算
             usd_yesterday_close = usd_today_open
             usd_yesterday_open = round(2 * usd_24h_open - usd_today_open, 2)
             yesterday_chg_usd = round(usd_yesterday_close - usd_yesterday_open, 2)
@@ -222,7 +224,7 @@ def get_crypto_info(coin_list, usd_rate):
 
 if __name__ == "__main__":
     try:
-        # 分步获取+即时释放内存，压低峰值防OOM 137报错
+        # 分步获取黄金，释放内存
         gold_info = get_gold_data()
         usd_ex = gold_info["usd_cny_rate"]
         gram_price = gold_info["cny_gram"]
@@ -240,11 +242,14 @@ if __name__ == "__main__":
         del gold_info, gold_block
         gc.collect()
 
-        # 获取美股
-        us_text = "===== 美股宽基指数 =====\n" + get_us_index(usd_ex, US_INDEX_LIST)
+        # 获取美股，单独捕获内部异常，保证变量一定存在不会丢失板块
+        try:
+            us_text = "===== 美股宽基指数 =====\n" + get_us_index(usd_ex, US_INDEX_LIST)
+        except Exception as us_err:
+            us_text = f"===== 美股宽基指数 =====\n美股整体获取异常：{str(us_err)}"
         gc.collect()
 
-        # 获取虚拟币（OKX欧易接口）
+        # 获取虚拟币
         crypto_text = "===== 虚拟币行情 =====\n" + get_crypto_info(CRYPTO_LIST, usd_ex)
         gc.collect()
 
