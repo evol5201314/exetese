@@ -3,15 +3,14 @@ import requests, time, gc, os, sys
 sys.stdout = open(os.devnull, 'w')
 sys.stderr = open(os.devnull, 'w')
 
-# 网络全局参数 8秒统一超时
+# 网络全局参数 8秒统一超时 关闭长连接 0初始重试防僵死
 requests.adapters.DEFAULT_RETRIES = 0
 SESS = requests.Session()
-# 关键修复：注释关闭长连接，避免频繁断连触发新浪风控
-# SESS.keep_alive = False
+SESS.keep_alive = False
 GLOBAL_TIMEOUT = 8
 HEADERS = {
     "User-Agent": "Mozilla/5.0 Linux Chrome/124.0 Safari/537.36",
-    "Connection": "keep-alive"
+    "Connection": "close"
 }
 
 # ====================== 顶部配置区 所有标的增删位置 ======================
@@ -46,6 +45,7 @@ def push_wechat(title, content):
         )
     except Exception:
         pass
+    gc.collect()
 
 # 黄金+美元汇率获取逻辑不变
 def get_gold_data():
@@ -71,9 +71,11 @@ def get_gold_data():
                 rate, gram = 7.22, round((oz * rate) / 31.1035, 2)
                 res = {"usd_oz": oz, "cny_gram": gram, "usd_cny_rate": rate, "source": "freegold兜底数据源"}
             del data
+            gc.collect()
             return res
         except Exception:
             time.sleep(0.5)
+            gc.collect()
     raise Exception("全部金价接口请求超时/失败")
 
 # A股解析函数完整保留，启用只需解开主程序两行注释
@@ -124,45 +126,56 @@ def get_stock_info(code_list):
         del raw_text
     except Exception as e:
         buf.append(f"股票接口整体请求失败：{e}")
+    gc.collect()
     return "\n".join(buf)
 
-# 美股指数函数：移除内部gc.collect()，避免socket提前回收
+# 美股指数函数 —— 完全迁移代码1的成功逻辑，使用 12秒超时 + 精简请求头
 def get_us_index(rate, idx_list):
+    # 使用代码1已验证的配置，避免8秒超时和Connection:close导致的问题
+    US_TIMEOUT = 12
+    US_HEADERS = {
+        "User-Agent": "Mozilla/5.0 Linux Chrome/124.0 Safari/537.36",
+        "Referer": "http://finance.sina.com.cn"
+    }
+    code_str = ",".join(idx_list)
+    url = f"http://hq.sinajs.cn/list={code_str}"
     buf = []
-    url = f"http://hq.sinajs.cn/list={','.join(idx_list)}"
     try:
-        resp = SESS.get(url, headers=HEADERS, timeout=GLOBAL_TIMEOUT)
-        text_lines = resp.text
-        del resp
-        for line in text_lines:
+        # 直接用 requests.get，不依赖全局 SESS 避免 keep_alive=False 的影响
+        r = requests.get(url, headers=US_HEADERS, timeout=US_TIMEOUT)
+        content = r.text
+        for line in content.split(";"):
             line = line.strip()
             if not line or '="' not in line:
                 continue
-            field_arr = line.split('"')[1].split(",")
-            if len(field_arr) < 4:
-                buf.extend(["指数数据残缺，跳过", "----------------------------------------"])
+            raw_str = line.split('"')[1]
+            data = raw_str.split(",")
+            if len(data) < 4:
+                buf.extend(["指数数据残缺，跳过", "-"*30])
                 continue
             try:
-                idx_name, now, chg, chg_pct, yest_pt = field_arr[0], float(field_arr[1]), float(field_arr[2]), float(field_arr[3]), float(field_arr[4]) if len(field_arr)>=5 else float(field_arr[1])
-            except Exception:
-                buf.extend([f"{field_arr[0]}数值解析失败", "----------------------------------------"])
+                idx_name = data[0]
+                now = float(data[1])
+                change = float(data[2])
+                change_pct = float(data[3])
+                yesterday_point = float(data[4]) if len(data)>=5 else now
+            except ValueError:
+                buf.extend([f"{data[0]} 数值解析失败", "-"*30])
                 continue
-            last_close = round(now - chg, 2)
-            day_chg = round(last_close - yest_pt, 2)
-            day_pct = round((day_chg / yest_pt)*100, 2) if yest_pt != 0 else 0
+            last_close = round(now - change, 2)
+            day_chg = round(last_close - yesterday_point, 2)
+            day_pct = round((day_chg / yesterday_point)*100, 2) if yesterday_point !=0 else 0
             rmb_price = round(now * rate, 2)
             buf += [
                 idx_name,
                 f"点位：{now} | 折合人民币{rmb_price}",
                 f"昨收：{last_close} 点",
-                f"当日涨跌：{chg}点（{chg_pct}%）",
+                f"当日涨跌：{change}点（{change_pct}%）",
                 f"前日涨跌：{day_chg}点（{day_pct}%）",
-                "----------------------------------------"
+                "-"*30
             ]
-        del text_lines
-    except Exception as err:
-        buf.append(f"美股指数接口请求失败：{str(err)}")
-        buf.append("----------------------------------------")
+    except Exception as e:
+        buf.append(f"美股指数接口失败：{e}")
     return "\n".join(buf)
 
 # 虚拟币：OKX欧易公开无密钥API，原生sodUtc8=早8点今日开盘
@@ -185,12 +198,14 @@ def get_crypto_info(coin_list, usd_rate):
             cny_today_open = round(usd_today_open * usd_rate, 2)
             today_chg_usd = round(usd_now - usd_today_open, 2)
             today_chg_pct = round((today_chg_usd / usd_today_open)*100, 2) if usd_today_open != 0 else 0
-            chg_24h_pct = round(float(data["price_change_percentage_24h"]), 2)
+            chg_24h_usd = round(usd_now - usd_24h_open, 2)
+            chg_24h_pct = round((chg_24h_usd / usd_24h_open)*100, 2) if usd_24h_open != 0 else 0
             usd_yesterday_close = usd_today_open
             usd_yesterday_open = round(2 * usd_24h_open - usd_today_open, 2)
             yesterday_chg_usd = round(usd_yesterday_close - usd_yesterday_open, 2)
             yesterday_chg_pct = round((yesterday_chg_usd / usd_yesterday_open)*100, 2) if usd_yesterday_open != 0 else 0
             cny_yesterday_close = round(usd_yesterday_close * usd_rate, 2)
+
             buf += [
                 f"{sym}",
                 f"现价：${usd_now} | 折合人民币¥{cny_now}",
@@ -202,9 +217,11 @@ def get_crypto_info(coin_list, usd_rate):
                 "----------------------------------------"
             ]
             del json_data, data
+            gc.collect()
         except Exception:
             buf.append(f"{coin} OKX欧易接口访问失败")
             buf.append("----------------------------------------")
+            gc.collect()
             time.sleep(0.3)
     return "\n".join(buf)
 
@@ -225,20 +242,23 @@ if __name__ == "__main__":
         ]
         gold_text = "\n".join(gold_block)
         del gold_info, gold_block
+        gc.collect()
 
         try:
             us_text = "===== 美股宽基指数 =====\n" + get_us_index(usd_ex, US_INDEX_LIST)
         except Exception as us_err:
             us_text = f"===== 美股宽基指数 =====\n美股整体获取异常：{str(us_err)}"
+        gc.collect()
 
         crypto_text = "===== 虚拟币行情 =====\n" + get_crypto_info(CRYPTO_LIST, usd_ex)
+        gc.collect()
 
         full_msg = f"{gold_text}\n{us_text}\n{crypto_text}"
         push_wechat("黄金+美股+BTC/ETH行情播报", full_msg)
 
-        # 只在全部请求结束后统一回收内存，不干扰网络请求
         del gold_text, us_text, crypto_text, full_msg
         gc.collect()
+
     except Exception as err:
         push_wechat("行情脚本异常提醒", f"脚本全局异常：{str(err)}")
         gc.collect()
