@@ -166,6 +166,7 @@ def get_us_index(rate, idx_list):
     gc.collect()
     return "\n".join(buf)
 
+# 虚拟币：全部使用接口原生字段，删除手动推算前日涨幅（解决数据失真）
 def get_crypto_info(coin_list, usd_rate):
     buf = []
     coin_ids = ",".join(coin_list)
@@ -188,21 +189,19 @@ def get_crypto_info(coin_list, usd_rate):
     for coin in coin_data:
         sym = coin["symbol"].upper()
         usd_now = round(coin["current_price"], 2)
-        usd_yest = round(usd_now - coin["price_change_24h"], 2)
-        usd_before_yest = round(usd_yest - (coin["price_change_24h"] / (1 + coin["price_change_percentage_24h"] / 100)), 2)
-        cny_now, cny_yest = round(usd_now * usd_rate, 2), round(usd_yest * usd_rate, 2)
-        chg_now_usd = round(coin["price_change_24h"], 2)
-        chg_now_pct = round(coin["price_change_percentage_24h"], 2)
-        chg_prev_usd = round(usd_yest - usd_before_yest, 2)
-        chg_prev_pct = round((chg_prev_usd / usd_before_yest)*100, 2) if usd_before_yest != 0 else 0
-        pct_24h = round(coin["price_change_percentage_24h"], 2)
+        # 原生24小时前价格 = 昨收
+        usd_24h_ago = round(usd_now - coin["price_change_24h"], 2)
+        cny_now = round(usd_now * usd_rate, 2)
+        cny_24h_ago = round(usd_24h_ago * usd_rate, 2)
+        # 接口原生24小时涨跌额、涨跌幅，不做二次计算
+        change_24h_usd = round(coin["price_change_24h"], 2)
+        change_24h_pct = round(coin["price_change_percentage_24h"], 2)
+
         buf += [
             f"{sym}",
             f"现价：${usd_now} | 折合人民币¥{cny_now}",
-            f"昨收：${usd_yest} 折合¥{cny_yest}",
-            f"当日涨跌：${chg_now_usd}（{chg_now_pct}%）",
-            f"昨日涨幅：${chg_prev_usd}（{chg_prev_pct}%）",
-            f"24小时涨幅：{pct_24h}%",
+            f"24h前价格：${usd_24h_ago} 折合¥{cny_24h_ago}",
+            f"24小时涨跌：${change_24h_usd}（{change_24h_pct}%）",
             "----------------------------------------"
         ]
     del coin_data
@@ -248,4 +247,3 @@ if __name__ == "__main__":
     except Exception as err:
         push_wechat("行情脚本异常提醒", f"脚本全局异常：{str(err)}")
         gc.collect()
-    # 无强制kill代码，执行完毕解释器自动退出，系统回收内存
