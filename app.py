@@ -3,7 +3,7 @@
 beizhu = "📈 面板程序 (优化版)"
 """
 ============================================================
-🐍 脚本面板 - 内存优化版
+🐍 脚本面板 - 内存优化版（无自动保存同步框，备注为边框样式）
 ============================================================
 """
 
@@ -26,7 +26,7 @@ SCRIPTS_DIR = "/root/scripts"
 STATUS_FILE = "/tmp/script_status.json"
 HISTORY_FILE = "/tmp/script_history.json"
 
-# ========== 同步框默认内容 ==========
+# ========== 同步框默认内容（仅作为默认值，修改不会自动保存） ==========
 tongbukuang = "https://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@github.com/evol5201314/exetest"
 
 def init_files():
@@ -94,31 +94,6 @@ def parse_github_url(raw_url):
             'token': token
         }
     return None
-
-# ========== 配置自保存 ==========
-def update_self_tongbukuang(new_value):
-    script_path = os.path.abspath(__file__)
-    try:
-        with open(script_path, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-        new_lines = []
-        for line in lines:
-            stripped = line.lstrip()
-            if stripped.startswith('tongbukuang ='):
-                indent = line[:len(line) - len(line.lstrip())]
-                new_lines.append(f'{indent}tongbukuang = "{new_value}"\n')
-            else:
-                new_lines.append(line)
-        with open(script_path, 'w', encoding='utf-8') as f:
-            f.writelines(new_lines)
-        return True
-    except Exception as e:
-        print(f"更新自身配置失败: {e}")
-        return False
-
-def restart_self():
-    subprocess.Popen([sys.executable, __file__] + sys.argv[1:])
-    os._exit(0)
 
 # ========== 端口清理 ==========
 def kill_process_on_port(port=5000):
@@ -214,7 +189,7 @@ def run_script(name):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            bufsize=1  # 行缓冲
+            bufsize=1
         )
         pid = proc.pid
         with open(STATUS_FILE, 'r') as f:
@@ -224,12 +199,9 @@ def run_script(name):
             json.dump(status_data, f)
         
         def bg_monitor():
-            import gc
             try:
-                # 限制输出读取大小（避免内存暴涨）
                 stdout, stderr = proc.communicate(timeout=300)
                 output = stdout + stderr
-                # 截断到 500KB
                 if len(output) > 500 * 1024:
                     output = output[:500 * 1024] + "\n... (输出已截断)"
                 returncode = proc.returncode
@@ -242,15 +214,12 @@ def run_script(name):
                 output = f"脚本执行异常: {e}"
                 returncode = -2
             finally:
-                # 强制关闭管道，释放资源
                 if proc.stdout:
                     proc.stdout.close()
                 if proc.stderr:
                     proc.stderr.close()
-                # 触发垃圾回收
                 gc.collect()
             
-            # 更新状态
             with open(STATUS_FILE, 'r') as f:
                 status_data = json.load(f)
             status_data[name]['status'] = 'success' if returncode == 0 else 'failed'
@@ -409,7 +378,7 @@ def upload_script():
     file.save(path)
     return jsonify({'message': f'✅ {file.filename} 上传成功'})
 
-# ========== GitHub 同步 ==========
+# ========== GitHub 同步（已移除自动保存功能） ==========
 @app.route('/api/sync_github', methods=['POST'])
 def sync_github():
     data = request.json or {}
@@ -452,33 +421,20 @@ def sync_github():
             except Exception as e:
                 print(f"下载 {file_name} 出错: {e}")
         if downloaded:
-            config_updated = False
-            if tongbukuang_new != tongbukuang:
-                if update_self_tongbukuang(tongbukuang_new):
-                    config_updated = True
-            response_msg = f'✅ 同步成功，共 {len(downloaded)} 个脚本'
-            if config_updated:
-                response_msg += '；配置已更新，面板将自动重启...'
-                def restart_later():
-                    time.sleep(1)
-                    restart_self()
-                threading.Thread(target=restart_later, daemon=True).start()
-                return jsonify({'message': response_msg, 'restart': True})
-            else:
-                return jsonify({'message': response_msg})
+            # 不再自动保存 tongbukuang，也不重启面板
+            return jsonify({'message': f'✅ 同步成功，共 {len(downloaded)} 个脚本'})
         else:
             return jsonify({'message': '⚠️ 未成功下载任何文件'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-# ========== 手动垃圾回收（调试用） ==========
+# ========== 手动垃圾回收 ==========
 @app.route('/api/gc', methods=['POST'])
 def force_gc():
-    import gc
     gc.collect()
     return jsonify({'message': '✅ 垃圾回收已执行'})
 
-# ==================== HTML 模板 ====================
+# ==================== HTML 模板（备注改为边框样式） ====================
 HTML = '''<!DOCTYPE html>
 <html>
 <head>
@@ -513,16 +469,17 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 @keyframes pulse{0%,100%{border-left-color:#ff9800}50%{border-left-color:#ffcc80}}
 .card .top{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px}
 .card .name{font-weight:600;font-size:15px;word-break:break-all}
+/* --- 备注行样式（边框，无背景色） --- */
 .remark-line {
-    font-size: 18px;
-    font-weight: bold;
-    color: #fff;
-    background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-    padding: 2px 16px;
+    font-size: 16px;
+    font-weight: normal;
+    color: #333;
+    border: 1px solid #d0d0d0;
     border-radius: 20px;
-    box-shadow: 0 2px 8px rgba(245, 87, 108, 0.4);
+    padding: 2px 16px;
     display: inline-block;
     margin: 4px 0 2px 0;
+    background: #fafafa;
 }
 .badge{font-size:11px;padding:2px 12px;border-radius:20px;font-weight:500;flex-shrink:0;margin-left:10px}
 .badge.idle{background:#eceff1;color:#546e7a}
