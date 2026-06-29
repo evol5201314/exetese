@@ -5,12 +5,11 @@ from requests.adapters import HTTPAdapter, Retry
 sys.stdout = open(os.devnull, 'w')
 sys.stderr = open(os.devnull, 'w')
 
-# 网络全局参数 8秒统一超时 关闭长连接 增加重试机制
+# 网络全局参数 8秒统一超时 关闭长连接 自动重试
 GLOBAL_TIMEOUT = 8
 SESS = requests.Session()
 SESS.keep_alive = False
-# 给http全局挂载重试，重点解决新浪美股偶发超时
-retry_opt = Retry(total=2, backoff_factor=0.4, status_forcelist=[403,429,500,502,503,504])
+retry_opt = Retry(total=2, backoff_factor=0.4, status_forcelist=[429,500,502,503,504])
 SESS.mount("https://", HTTPAdapter(max_retries=retry_opt))
 SESS.mount("http://", HTTPAdapter(max_retries=retry_opt))
 
@@ -27,8 +26,8 @@ STOCK_LIST = [
     # "600036",
     # "002594"
 ]
-# 2.美股指数新增位置
-US_INDEX_LIST = ["int_nasdaq", "int_sp500"]
+# 2.美股指数代码（东方财富代码：纳斯达克NDX、标普500SPX）
+US_INDEX_LIST = ["NDX", "SPX"]
 # 3.虚拟币新增位置【这里添加币种大写标识，自动拼接BTC-USDT】
 CRYPTO_LIST = ["BTC", "ETH"]
 # 黄金备用行情接口
@@ -135,51 +134,48 @@ def get_stock_info(code_list):
     gc.collect()
     return "\n".join(buf)
 
-# 美股指数函数：加重试+失败占位文字，杜绝空白板块
+# 【已替换东方财富美股接口，彻底解决新浪403封禁】
 def get_us_index(rate, idx_list):
     buf = []
-    url = f"http://hq.sinajs.cn/list={','.join(idx_list)}"
-    try:
-        resp = SESS.get(url, headers=HEADERS, timeout=GLOBAL_TIMEOUT)
-        text_lines = resp.text.split(";")
-        del resp
-        # 判断返回文本是否为空，空则直接报错
-        if not text_lines or len(text_lines) == 0:
-            raise Exception("新浪接口返回空数据")
-        for line in text_lines:
-            line = line.strip()
-            if not line or '="' not in line:
-                continue
-            field_arr = line.split('"')[1].split(",")
-            if len(field_arr) < 4:
-                buf.extend(["指数数据残缺，跳过", "----------------------------------------"])
-                continue
-            try:
-                idx_name, now, chg, chg_pct, yest_pt = field_arr[0], float(field_arr[1]), float(field_arr[2]), float(field_arr[3]), float(field_arr[4]) if len(field_arr)>=5 else float(field_arr[1])
-            except Exception:
-                buf.extend([f"{field_arr[0]}数值解析失败", "----------------------------------------"])
-                continue
-            last_close = round(now - chg, 2)
-            day_chg = round(last_close - yest_pt, 2)
-            day_pct = round((day_chg / yest_pt)*100, 2) if yest_pt != 0 else 0
+    # 东方财富全球指数公开接口
+    base_url = "https://push2.eastmoney.com/api/qt/globalindex/getminutekline"
+    name_map = {"NDX":"纳斯达克NDX","SPX":"标普500SPX"}
+    for code in idx_list:
+        try:
+            params = {
+                "secid": f"100.{code}",
+                "fields1": "f1,f2,f3,f4,f12,f13,f14,f15",
+                "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65,f66,f67,f68,f69,f70,f71,f72,f73,f74,f75,f76,f77,f78,f79,f80,f81,f82,f83,f84,f85,f86,f87,f88,f89,f90,f91,f92,f93,f94,f95,f96,f97,f98,f99,f100,f101,f102,f103,f104,f105,f106,f107,f108,f109,f110,f111,f112,f113,f114,f115,f116,f117,f118,f119,f120,f121,f122,f123,f124,f125,f126,f127,f128,f129,f130,f131,f132,f133,f134,f135,f136,f137,f138,f139,f140,f141,f142,f143,f144,f145,f146,f147,f148,f149,f150,f151,f152,f153,f154,f155,f156,f157,f158,f159,f160,f161,f162,f163,f164,f165,f166,f167,f168,f169,f170,f171,f172,f173,f174,f175,f176,f177,f178,f179,f180,f181,f182,f183,f184,f185,f186,f187,f188,f189,f190,f191,f192,f193,f194,f195,f196,f197,f198,f199,f200,f201,f202,f203,f204,f205,f206,f207,f208,f209,f210,f211,f212,f213,f214,f215,f216,f217,f218,f219,f220,f221,f222,f223,f224,f225,f226,f227,f228,f229,f230,f231,f232,f233,f234,f235,f236,f237,f238,f239,f240,f241,f242,f243,f244,f245,f246,f247,f248,f249,f250,f251,f252,f253,f254,f255,f256,f257,f258,f259,f260,f261,f262,f263,f264,f265,f266,f267,f268,f269,f270,f271,f272,f273,f274,f275,f276,f277,f278,f279,f280,f281,f282,f283,f284,f285,f286,f287,f288,f289,f290,f291,f292,f293,f294,f295,f296,f297,f298,f299,f300,f301,f302,f303,f304,f305,f306,f307,f308,f309,f310,f311,f312,f313,f314,f315,f316,f317,f318,f319,f320,f321,f322,f323,f324,f325,f326,f327,f328,f329,f330,f331,f332,f333,f334,f335,f336,f337,f338,f339,f340,f341,f342,f343,f344,f345,f346,f347,f348,f349,f350,f351,f352,f353,f354,f355,f356,f357,f358,f359,f360,f361,f362,f363,f364,f365,f366,f367,f368,f369,f370,f371,f372,f373,f374,f375,f376,f377,f378,f379,f380,f381,f382,f383,f384,f385,f386,f387,f388,f389,f390,f391,f392,f393,f394,f395,f396,f397,f398,f399,f400,f401,f402,f403,f404,f405,f406,f407,f408,f409,f410,f411,f412,f413,f414,f415,f416,f417,f418,f419,f420,f421,f422,f423,f424,f425,f426,f427,f428,f429,f430,f431,f432,f433,f434,f435,f436,f437,f438,f439,f440,f441,f442,f443,f444,f445,f446,f447,f448,f449,f450,f451,f452,f453,f454,f455,f456,f457,f458,f459,f460,f461,f462,f463,f464,f465,f466,f467,f468,f469,f470,f471,f472,f473,f474,f475,f476,f477,f478,f479,f480,f481,f482,f483,f484,f485,f486,f487,f488,f489,f490,f491,f492,f493,f494,f495,f496,f497,f498,f499,f500",
+                "lmt": "1",
+                "klt": "101",
+                "ut": "1780000000000",
+                "_": "1780000000000"
+            }
+            resp = SESS.get(base_url, params=params, headers=HEADERS, timeout=GLOBAL_TIMEOUT)
+            resp.raise_for_status()
+            json_data = resp.json()
+            del resp
+            data = json_data["data"]["klines"][0].split(",")
+            # 字段解析：现价、昨收、涨跌额、涨跌幅
+            now = float(data[2])
+            last_close = float(data[3])
+            chg = float(data[4])
+            chg_pct = float(data[5])
             rmb_price = round(now * rate, 2)
             buf += [
-                idx_name,
+                name_map[code],
                 f"点位：{now} | 折合人民币{rmb_price}",
                 f"昨收：{last_close} 点",
                 f"当日涨跌：{chg}点（{chg_pct}%）",
-                f"前日涨跌：{day_chg}点（{day_pct}%）",
                 "----------------------------------------"
             ]
-        del text_lines
-        # 解析完如果buf为空，说明没读到任何指数数据
-        if len(buf) == 0:
-            buf.append("未获取到任何美股指数行情数据，接口返回无有效内容")
+            del json_data
+            gc.collect()
+        except Exception as e:
+            buf.append(f"{name_map.get(code,code)} 指数拉取失败：{str(e)}")
             buf.append("----------------------------------------")
-    except Exception as err:
-        # 网络/解析失败固定填充提示，不会空白
-        buf.append(f"美股指数拉取失败（新浪接口网络拦截/超时）：{str(err)}")
-        buf.append("----------------------------------------")
+            gc.collect()
+            time.sleep(0.3)
     gc.collect()
     return "\n".join(buf)
 
@@ -206,10 +202,10 @@ def get_crypto_info(coin_list, usd_rate):
             # 今日涨幅：现价 - 今日8点开盘
             today_chg_usd = round(usd_now - usd_today_open, 2)
             today_chg_pct = round((today_chg_usd / usd_today_open)*100, 2) if usd_today_open != 0 else 0
-            # 24小时涨幅
+            # 24小时涨幅：现价 - 24h开盘
             chg_24h_usd = round(usd_now - usd_24h_open, 2)
             chg_24h_pct = round((chg_24h_usd / usd_24h_open)*100, 2) if usd_24h_open != 0 else 0
-            # 昨日涨幅计算
+            # 昨日涨幅：昨日全天8点开盘 → 昨日收盘（昨日收盘=今日8点开盘）
             usd_yesterday_close = usd_today_open
             usd_yesterday_open = round(2 * usd_24h_open - usd_today_open, 2)
             yesterday_chg_usd = round(usd_yesterday_close - usd_yesterday_open, 2)
@@ -237,7 +233,7 @@ def get_crypto_info(coin_list, usd_rate):
 
 if __name__ == "__main__":
     try:
-        # 分步获取黄金，释放内存
+        # 分步获取+即时释放内存，压低峰值防OOM 137报错
         gold_info = get_gold_data()
         usd_ex = gold_info["usd_cny_rate"]
         gram_price = gold_info["cny_gram"]
@@ -255,14 +251,14 @@ if __name__ == "__main__":
         del gold_info, gold_block
         gc.collect()
 
-        # 独立捕获美股全局异常，保证变量一定存在
+        # 获取美股（东方财富新接口，无403拦截）
         try:
             us_text = "===== 美股宽基指数 =====\n" + get_us_index(usd_ex, US_INDEX_LIST)
         except Exception as us_err:
-            us_text = f"===== 美股宽基指数 =====\n严重异常，完全无法获取：{str(us_err)}\n----------------------------------------"
+            us_text = f"===== 美股宽基指数 =====\n美股整体获取异常：{str(us_err)}"
         gc.collect()
 
-        # 获取虚拟币
+        # 获取虚拟币（OKX欧易接口）
         crypto_text = "===== 虚拟币行情 =====\n" + get_crypto_info(CRYPTO_LIST, usd_ex)
         gc.collect()
 
