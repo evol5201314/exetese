@@ -1,19 +1,62 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-beizhu = "📈 独立版：一键同步 GitHub 仓库"
 
-import os, sys, json, urllib.request, urllib.error
+beizhu = "📈 独立版：一键同步 GitHub 仓库（镜像同步 /root/scripts/）"
 
-# ========== 配置区域 ==========
+"""
+===== 【OpenWrt 低内存专用优化说明 请勿删除以下轻量化逻辑】 =====
+硬件环境：路由可用内存仅≈30M，精简python3，峰值内存控制最小化
+屏蔽stdout/stderr输出至/dev/null，不读写闪存，无日志文件占用存储空间
+保留下方备注方便查看脚本详情
+"""
+
+"""
+================================================================
+🐍 GitHub 独立同步工具（镜像同步版）
+================================================================
+
+【功能】
+  从 GitHub 仓库同步 .py 文件到路由器
+  完全镜像仓库结构：
+    - 仓库 /root/scripts/ 子目录 → /root/scripts/
+    - 仓库 /root/scripts/tools/ 子目录 → /root/scripts/tools/
+
+【依赖】
+  ✅ Python 3 (python3-light 即可)
+  ✅ urllib (标准库)
+  ✅ json   (标准库)
+  ✅ os     (标准库)
+
+【使用方法】
+  1. 修改下方的 CONFIG（仓库地址、Token）
+  2. 运行: python3 sync_github.py
+
+【CONFIG 示例】
+  公开仓库: "repo_url": "https://github.com/用户名/仓库名"
+  私有仓库: "repo_url": "https://token@github.com/用户名/仓库名"
+
+================================================================
+"""
+
+import os
+import sys
+import json
+import urllib.request
+import urllib.error
+
+# ========== 配置区域（请修改） ==========
 CONFIG = {
-    # 用户输入仓库链接即可：
-    # 公开仓库: https://github.com/用户名/仓库名
-    # 私有仓库: https://token@github.com/用户名/仓库名
     "repo_url": "https://github.com/evol5201314/exetest",
     "branch": "main",
 }
 
-# 仓库子目录（根据实际情况修改）
+ENV_REPO = os.environ.get("GITHUB_REPO")
+if ENV_REPO:
+    CONFIG["repo_url"] = ENV_REPO
+
+# 仓库子目录路径（根据你的仓库结构调整）
+# - 如果文件在仓库根目录 → SUB_PATH = ""
+# - 如果文件在 root/scripts/ 下 → SUB_PATH = "root/scripts"
 SUB_PATH = "root/scripts"
 
 # ==========================================
@@ -44,7 +87,12 @@ def parse_github_url(raw_url):
         rest = repo_part
     parts = rest.split("/")
     if len(parts) >= 2:
-        return {"username": parts[0], "repo": parts[1], "branch": branch, "token": token}
+        return {
+            "username": parts[0],
+            "repo": parts[1],
+            "branch": branch,
+            "token": token
+        }
     return None
 
 def fetch_api(url, token=None):
@@ -61,25 +109,34 @@ def sync_dir(repo_url, target_dir, sub_path=""):
     parsed = parse_github_url(repo_url)
     if not parsed:
         return False, "解析失败"
-    username, repo, token, branch = parsed["username"], parsed["repo"], parsed["token"], parsed["branch"]
+    username = parsed["username"]
+    repo = parsed["repo"]
+    token = parsed["token"]
+    branch = parsed.get("branch", "main")
+
     if sub_path:
         api_url = f"https://api.github.com/repos/{username}/{repo}/contents/{sub_path}?ref={branch}"
     else:
         api_url = f"https://api.github.com/repos/{username}/{repo}/contents?ref={branch}"
+
     resp = fetch_api(api_url, token)
     if resp is None:
         return False, "API请求失败"
+
     try:
         files = json.loads(resp)
-    except:
+    except Exception:
         return False, "JSON解析失败"
+
     if isinstance(files, dict) and "message" in files:
         return False, files["message"]
     if not isinstance(files, list):
         return False, "响应格式异常"
+
     py_files = [f for f in files if f.get("name", "").endswith(".py") and f.get("type") == "file"]
     if not py_files:
         return True, "无 .py 文件"
+
     os.makedirs(target_dir, exist_ok=True)
     downloaded = 0
     for f in py_files:
@@ -106,13 +163,17 @@ if __name__ == "__main__":
     if not repo:
         print("❌ 未设置仓库地址")
         sys.exit(1)
+
     print("========================================")
-    print("🐍 GitHub 同步工具")
-    print(f"🔗 {repo}")
+    print("🐍 GitHub 独立同步工具 (镜像同步)")
     print("========================================")
+
     ok1, msg1 = sync_dir(repo, "/root/scripts", SUB_PATH)
     print(f"📁 /root/scripts/: {msg1}")
-    ok2, msg2 = sync_dir(repo, "/root/scripts/tools", f"{SUB_PATH}/tools" if SUB_PATH else "tools")
+
+    tools_sub = f"{SUB_PATH}/tools" if SUB_PATH else "tools"
+    ok2, msg2 = sync_dir(repo, "/root/scripts/tools", tools_sub)
     print(f"📁 /root/scripts/tools/: {msg2}")
+
     print("========================================")
     sys.exit(0 if ok1 and ok2 else 1)
