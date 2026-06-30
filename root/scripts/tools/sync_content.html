@@ -1,0 +1,19 @@
+<div class="modal active" id="syncModal" style="display:flex;">
+<div class="modal-box" style="max-width:600px;width:94%;">
+<span class="close" onclick="closeModalByName('syncModal')">&times;</span>
+<h2>📥 从 GitHub 同步脚本</h2>
+
+<div style="margin:16px 0;">
+    <label style="font-weight:500;font-size:14px;color:#555;display:block;margin-bottom:6px;">仓库地址</label>
+    <input type="text" id="syncRepoInput" placeholder="https://github.com/用户名/仓库名" style="width:100%;padding:10px 14px;border:1px solid #ddd;border-radius:6px;font-size:14px;font-family:monospace;">
+    <div style="font-size:12px;color:#888;margin-top:6px;">💡 支持公开仓库和私有仓库（带 Token）</div>
+</div>
+
+<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;">
+    <button class="btn-primary" onclick="doSync()" style="padding:8px 28px;border:none;border-radius:6px;cursor:pointer;font-weight:500;background:#667eea;color:#fff;font-size:14px;">📥 开始同步</button>
+    <button class="btn-secondary" onclick="closeModalByName('syncModal')" style="padding:8px 20px;border:none;border-radius:6px;cursor:pointer;font-weight:500;background:#eceff1;color:#333;font-size:14px;">取消</button>
+</div>
+
+<pre id="syncOutput" style="margin-top:12px;background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:6px;font-size:12px;max-height:200px;overflow:auto;white-space:pre-wrap;word-break:break-all;display:none;">执行中...</pre>
+</div>
+</div>
