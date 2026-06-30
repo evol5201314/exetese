@@ -6,7 +6,7 @@
 屏蔽stdout/stderr输出至/dev/null，不读写闪存，无日志文件占用存储空间
 保留下方备注方便查看脚本详情
 """
-beizhu = "📈 面板程序 (系统工具增强版)"
+beizhu = "📈 面板程序 (系统工具增强版 + Cron管理 + APK缓存清理)"
 """
 ============================================================
 🐍 脚本面板 - 系统工具增强版
@@ -36,7 +36,7 @@ HISTORY_FILE = "/tmp/script_history.json"
 CRONTAB_FILE = "/etc/crontabs/root"
 
 # ========== 同步框默认内容 ==========
-tongbukuang = "https://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/evol5201314/exetest"
+tongbukuang = "https://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/evol5201314/exetest"
 
 def init_files():
     os.makedirs(SCRIPTS_DIR, exist_ok=True)
