@@ -1,18 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-beizhu = "📈 面板核心版 (所有功能独立为脚本)"
-
-"""
-===== 【OpenWrt 低内存专用优化说明】 =====
-硬件环境：路由可用内存仅≈30M，精简python3，峰值内存控制最小化
-功能：脚本列表展示 + 运行/停止，其他功能通过按钮调用独立脚本（即用即释放）
-"""
+beizhu = "📈 面板轻量版 (UI + 调用独立脚本)"
 
 import os, sys, json, subprocess, threading, signal, gc
 from datetime import datetime
 from flask import Flask, render_template_string, jsonify, request
 
 app = Flask(__name__)
+
 SCRIPTS_DIR = "/root/scripts"
 TOOLS_DIR = "/root/scripts/tools"
 STATUS_FILE = "/tmp/script_status.json"
@@ -77,11 +72,10 @@ def get_scripts():
         return scripts
     with open(STATUS_FILE, 'r') as f:
         status_data = json.load(f)
-    # 只扫描根目录，不递归 tools/
     for fn in sorted(os.listdir(SCRIPTS_DIR)):
-        if fn.endswith('.py') and os.path.isfile(os.path.join(SCRIPTS_DIR, fn)):
-            p = os.path.join(SCRIPTS_DIR, fn)
-            st = os.stat(p)
+        full_path = os.path.join(SCRIPTS_DIR, fn)
+        if fn.endswith('.py') and os.path.isfile(full_path):
+            st = os.stat(full_path)
             s = status_data.get(fn, {'status': 'idle', 'pid': None})
             scripts.append({
                 'name': fn,
@@ -89,7 +83,7 @@ def get_scripts():
                 'mtime': datetime.fromtimestamp(st.st_mtime).strftime('%Y-%m-%d %H:%M:%S'),
                 'status': s.get('status', 'idle'),
                 'pid': s.get('pid'),
-                'remark': extract_beizhu(p) or ''
+                'remark': extract_beizhu(full_path) or ''
             })
     return scripts
 
@@ -138,6 +132,7 @@ def api_apk_cache_size():
 def api_router_ip():
     return jsonify({'ip': get_router_ip()})
 
+# ========== 运行/停止（常驻） ==========
 @app.route('/api/run/<name>', methods=['POST'])
 def run_script(name):
     path = os.path.join(SCRIPTS_DIR, name)
@@ -224,10 +219,12 @@ def stop_script(name):
     else:
         return jsonify({'message': f'ℹ️ {name} 状态已重置'})
 
+# ========== 统一工具调用（支持参数传递） ==========
 @app.route('/api/run_tool', methods=['POST'])
 def run_tool():
     data = request.json
     script = data.get('script', '')
+    args = data.get('args', [])
     if not script:
         return jsonify({'error': '未指定脚本'}), 400
     if not script.endswith('.py') or '/' in script:
@@ -236,7 +233,8 @@ def run_tool():
     if not os.path.exists(script_path):
         return jsonify({'error': f'工具脚本 {script} 不存在'}), 404
     try:
-        result = subprocess.run(['python3', script_path], capture_output=True, text=True, timeout=120)
+        cmd = ['python3', script_path] + args
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         output = result.stdout + result.stderr
         if not output.strip():
             output = '✅ 执行完成（无输出）'
@@ -254,10 +252,10 @@ def restart_router():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-# ==================== HTML 模板 ====================
+# ==================== HTML 模板（含模态框，收集用户输入） ====================
 HTML = r'''
 <!DOCTYPE html>
-<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>🐍 脚本面板 精简版</title>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>🐍 脚本面板</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f0f2f5;padding:16px}
@@ -324,17 +322,19 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .modal-box .meta{font-size:13px;color:#888;margin-bottom:12px}
 .modal-box pre{background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:6px;font-size:12px;max-height:400px;overflow:auto;white-space:pre-wrap;word-break:break-all}
 .close{float:right;font-size:24px;cursor:pointer;color:#888}.close:hover{color:#333}
-input,textarea{width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;margin:6px 0;font-size:14px;font-family:inherit}
+input,textarea,select{width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;margin:6px 0;font-size:14px;font-family:inherit}
 textarea{min-height:180px;font-family:monospace;resize:vertical}
+select{appearance:auto;background:#fff}
 .modal-box .form-actions{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
 .modal-box .form-actions button{padding:6px 20px;border:none;border-radius:6px;cursor:pointer;font-weight:500}
 .btn-primary{background:#667eea;color:#fff}.btn-primary:hover{background:#5a6fd6}
 .btn-secondary{background:#eceff1;color:#333}.btn-secondary:hover{background:#d5d9de}
+.btn-danger{background:#f44336;color:#fff}.btn-danger:hover{background:#d32f2f}
 @media(max-width:600px){.grid{grid-template-columns:1fr}}
 </style></head>
 <body>
 <div class="container">
-<div class="header"><h1>🐍 脚本面板 精简版</h1><div class="sub">📁 /root/scripts &nbsp;|&nbsp; ⏱ 自动刷新 10s</div></div>
+<div class="header"><h1>🐍 脚本面板</h1><div class="sub">📁 /root/scripts &nbsp;|&nbsp; ⏱ 自动刷新 10s</div></div>
 <div class="stats" id="stats">
 <div class="stat-card"><div class="num" id="total">0</div><div class="label">📄 总数</div></div>
 <div class="stat-card"><div class="num" id="running">0</div><div class="label">🔄 运行中</div></div>
@@ -345,19 +345,16 @@ textarea{min-height:180px;font-family:monospace;resize:vertical}
 <div class="stat-card" style="flex:0"><button class="refresh-btn" id="refreshBtn">🔄 刷新</button></div>
 </div>
 
-<!-- 按钮组1: 脚本管理 + 工具 -->
+<!-- 按钮组1: 脚本管理 -->
 <div class="actions-bar">
 <span class="group-label">📜 脚本</span>
-<button class="btn-new" onclick="runTool('new_script.py', '📝 新建脚本')">➕ 新建</button>
-<button class="btn-upload" onclick="runTool('upload_script.py', '📤 上传脚本')">📤 上传</button>
-<button class="btn-edit" onclick="runTool('edit_script.py', '✏️ 编辑脚本')">✏️ 编辑</button>
-<button class="btn-del" onclick="runTool('delete_script.py', '🗑 删除脚本')">🗑 删除</button>
-<button class="btn-log" onclick="runTool('view_log.py', '📄 查看日志')">📄 日志</button>
-<button class="btn-sync" onclick="runTool('sync_github.py', '📥 同步GitHub')">📥 同步</button>
-<button class="btn-gc" onclick="runTool('gc_force.py', '🧹 GC')">🧹 GC</button>
-<button class="btn-cron" onclick="runTool('cron_manager.py', '⏰ 定时')">⏰ 定时</button>
-<button class="btn-kill" onclick="runTool('kill_top_process.py', '💣 清理')">💣 清理</button>
-<button class="btn-cache" onclick="runTool('clean_apk_cache.py', '🧹 缓存')">🧹 缓存</button>
+<button class="btn-new" id="btnNew">➕ 新建</button>
+<button class="btn-upload" id="btnUpload">📤 上传</button>
+<button class="btn-edit" id="btnEdit">✏️ 编辑</button>
+<button class="btn-del" id="btnDel">🗑 删除</button>
+<button class="btn-log" id="btnLog">📄 日志</button>
+<button class="btn-sync" id="btnSync">📥 同步</button>
+<button class="btn-gc" id="btnGc">🧹 GC</button>
 </div>
 
 <!-- 按钮组2: 路由器工具 -->
@@ -365,18 +362,68 @@ textarea{min-height:180px;font-family:monospace;resize:vertical}
 <span class="group-label">⚙️ 路由</span>
 <button class="btn-luci" id="btnLuci">🌐 路由器</button>
 <button class="btn-9090" id="btn9090">🔧 后端</button>
+<button class="btn-cron" id="btnCron">⏰ 定时</button>
 <button class="btn-reboot" id="btnReboot">🔄 重启路由</button>
+<button class="btn-kill" id="btnKill">💣 清理</button>
+<button class="btn-cache" id="btnCache">🧹 缓存</button>
 </div>
 
 <div class="grid" id="grid"></div>
 </div>
 
-<!-- 工具输出弹窗 -->
-<div class="modal" id="toolModal"><div class="modal-box"><span class="close" onclick="closeToolModal()">&times;</span><h2 id="toolTitle">工具执行</h2><pre id="toolOutput" style="background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:6px;font-size:12px;max-height:400px;overflow:auto;white-space:pre-wrap;word-break:break-all">执行中...</pre><div class="form-actions"><button class="btn-secondary" onclick="closeToolModal()">关闭</button></div></div></div>
+<!-- 新建脚本弹窗 -->
+<div class="modal" id="newModal"><div class="modal-box">
+<span class="close" onclick="closeModal('newModal')">&times;</span>
+<h2>📝 新建脚本</h2>
+<div style="margin:12px 0"><label>文件名（.py）</label><input type="text" id="newName" placeholder="例如: monitor.py"></div>
+<div><label>代码内容</label><textarea id="newContent" placeholder="# 在此编写 Python 代码"></textarea></div>
+<div class="form-actions"><button class="btn-primary" onclick="runToolWithArgs('new_script.py', 'newName', 'newContent')">💾 保存</button><button class="btn-secondary" onclick="closeModal('newModal')">取消</button></div>
+</div></div>
+
+<!-- 编辑脚本弹窗 -->
+<div class="modal" id="editModal"><div class="modal-box">
+<span class="close" onclick="closeModal('editModal')">&times;</span>
+<h2>✏️ 编辑脚本</h2>
+<div style="margin:12px 0">
+<label>选择脚本</label>
+<select id="editSelect" onchange="loadEditContent()"></select>
+</div>
+<div><label>代码内容</label><textarea id="editContent"></textarea></div>
+<div class="form-actions"><button class="btn-primary" onclick="saveEdit()">💾 保存</button><button class="btn-secondary" onclick="closeModal('editModal')">取消</button></div>
+</div></div>
+
+<!-- 删除脚本弹窗 -->
+<div class="modal" id="delModal"><div class="modal-box">
+<span class="close" onclick="closeModal('delModal')">&times;</span>
+<h2>🗑 删除脚本</h2>
+<div style="margin:12px 0">
+<label>选择要删除的脚本</label>
+<select id="delSelect"></select>
+</div>
+<div class="form-actions"><button class="btn-danger" onclick="runToolWithSelect('delete_script.py', 'delSelect')">🗑 确认删除</button><button class="btn-secondary" onclick="closeModal('delModal')">取消</button></div>
+</div></div>
+
+<!-- 查看日志弹窗 -->
+<div class="modal" id="logModal"><div class="modal-box">
+<span class="close" onclick="closeModal('logModal')">&times;</span>
+<h2>📄 查看日志</h2>
+<div style="margin:12px 0">
+<label>选择脚本</label>
+<select id="logSelect" onchange="loadLog()"></select>
+</div>
+<pre id="logContent" style="background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:6px;font-size:12px;max-height:300px;overflow:auto;white-space:pre-wrap;word-break:break-all">请选择脚本</pre>
+</div></div>
+
+<!-- 工具执行输出弹窗 -->
+<div class="modal" id="toolModal"><div class="modal-box">
+<span class="close" onclick="closeModal('toolModal')">&times;</span>
+<h2 id="toolTitle">工具执行</h2>
+<pre id="toolOutput" style="background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:6px;font-size:12px;max-height:400px;overflow:auto;white-space:pre-wrap;word-break:break-all">执行中...</pre>
+<div class="form-actions"><button class="btn-secondary" onclick="closeModal('toolModal')">关闭</button></div>
+</div></div>
 
 <script>
-(function(){
-var routerIP='';
+var routerIP = '';
 
 function st(s){var map={idle:'待执行',running:'运行中',success:'成功',failed:'失败',timeout:'超时',error:'错误',stopped:'已停止'};return map[s]||s}
 function badge(s){return'<span class="badge '+s+'">'+st(s)+'</span>'}
@@ -428,36 +475,157 @@ function bindCardEvents(){
     document.querySelectorAll('.btn-stop').forEach(function(b){b.onclick=function(){var n=this.dataset.name;if(!confirm('停止 "'+n+'" ?'))return;fetch('/api/stop/'+encodeURIComponent(n),{method:'POST'}).then(r=>r.json()).then(d=>{alert(d.message||d.error);loadAll()})}})
 }
 
-function runTool(script, label){
+// ========== 通用：调用工具脚本（带参数） ==========
+function runToolWithArgs(script, inputId1, inputId2) {
+    var val1 = document.getElementById(inputId1).value.trim()
+    var val2 = document.getElementById(inputId2).value.trim()
+    if (!val1) { alert('请填写必要信息'); return }
+    var args = ['--name', val1, '--content', val2]
+    doRunTool(script, args, '📝 新建脚本')
+}
+
+function runToolWithSelect(script, selectId) {
+    var sel = document.getElementById(selectId)
+    if (!sel.value) { alert('请选择脚本'); return }
+    var args = ['--name', sel.value]
+    doRunTool(script, args, '🗑 删除脚本')
+}
+
+function doRunTool(script, args, label) {
     var modal=document.getElementById('toolModal')
     document.getElementById('toolTitle').textContent='⏳ '+label+' ...'
     document.getElementById('toolOutput').textContent='执行中...'
     openModal('toolModal')
-    fetch('/api/run_tool',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script:script})})
+    fetch('/api/run_tool',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({script:script, args:args})})
     .then(r=>r.json()).then(d=>{
         document.getElementById('toolTitle').textContent='✅ '+label+' 完成'
         document.getElementById('toolOutput').textContent=d.output||'执行完成'
         loadAll()
+        // 关闭弹窗
+        setTimeout(function(){closeModal('toolModal')}, 2000)
     }).catch(e=>{
         document.getElementById('toolTitle').textContent='❌ '+label+' 失败'
         document.getElementById('toolOutput').textContent='执行失败: '+e.message
     })
 }
-function closeToolModal(){closeModal('toolModal')}
 
-// 跳转
+// ========== 上传脚本（文件表单） ==========
+function uploadFile() {
+    var input = document.getElementById('fileInput')
+    if (!input.files.length) return
+    var formData = new FormData()
+    formData.append('file', input.files[0])
+    var modal=document.getElementById('toolModal')
+    document.getElementById('toolTitle').textContent='⏳ 📤 上传脚本 ...'
+    document.getElementById('toolOutput').textContent='上传中...'
+    openModal('toolModal')
+    fetch('/api/upload', {method:'POST', body:formData})
+    .then(r=>r.json()).then(d=>{
+        document.getElementById('toolTitle').textContent='✅ 上传完成'
+        document.getElementById('toolOutput').textContent=d.message||d.error||'执行完成'
+        loadAll()
+        setTimeout(function(){closeModal('toolModal')}, 2000)
+    }).catch(e=>{
+        document.getElementById('toolTitle').textContent='❌ 上传失败'
+        document.getElementById('toolOutput').textContent='失败: '+e.message
+    })
+    input.value=''
+}
+
+// ========== 编辑：加载脚本列表 ==========
+function populateEditSelect() {
+    fetch('/api/scripts').then(r=>r.json()).then(d=>{
+        var sel = document.getElementById('editSelect')
+        sel.innerHTML = '<option value="">-- 选择脚本 --</option>'
+        if(d) d.forEach(function(s){var opt=document.createElement('option');opt.value=s.name;opt.textContent=s.name;sel.appendChild(opt)})
+    }).catch(()=>{})
+}
+
+function loadEditContent() {
+    var name = document.getElementById('editSelect').value
+    if (!name) return
+    fetch('/api/get/'+encodeURIComponent(name)).then(r=>r.json()).then(d=>{
+        if(d.error){alert(d.error);return}
+        document.getElementById('editContent').value=d.content||''
+    }).catch(()=>{})
+}
+
+function saveEdit() {
+    var name = document.getElementById('editSelect').value
+    var content = document.getElementById('editContent').value
+    if (!name) { alert('请选择脚本'); return }
+    if (!content) { alert('内容不能为空'); return }
+    var args = ['--name', name, '--content', content]
+    doRunTool('edit_script.py', args, '✏️ 编辑脚本')
+    closeModal('editModal')
+}
+
+// ========== 删除：加载脚本列表 ==========
+function populateDelSelect() {
+    fetch('/api/scripts').then(r=>r.json()).then(d=>{
+        var sel = document.getElementById('delSelect')
+        sel.innerHTML = '<option value="">-- 选择脚本 --</option>'
+        if(d) d.forEach(function(s){var opt=document.createElement('option');opt.value=s.name;opt.textContent=s.name;sel.appendChild(opt)})
+    }).catch(()=>{})
+}
+
+// ========== 日志 ==========
+function populateLogSelect() {
+    fetch('/api/scripts').then(r=>r.json()).then(d=>{
+        var sel = document.getElementById('logSelect')
+        sel.innerHTML = '<option value="">-- 选择脚本 --</option>'
+        if(d) d.forEach(function(s){var opt=document.createElement('option');opt.value=s.name;opt.textContent=s.name;sel.appendChild(opt)})
+    }).catch(()=>{})
+}
+
+function loadLog() {
+    var name = document.getElementById('logSelect').value
+    if (!name) { document.getElementById('logContent').textContent='请选择脚本'; return }
+    fetch('/api/log/'+encodeURIComponent(name)).then(r=>r.json()).then(d=>{
+        document.getElementById('logContent').textContent='状态: '+st(d.status)+'\n\n'+ (d.output||'暂无输出')
+    }).catch(()=>{})
+}
+
+// ========== 工具按钮（无参数） ==========
+function runSimpleTool(script, label) {
+    doRunTool(script, [], label)
+}
+
+// ========== 跳转 ==========
 function goLuci(){window.open('http://'+(routerIP||'192.168.1.1')+'/cgi-bin/luci','_blank')}
 function go9090(){window.open('http://'+(routerIP||'192.168.1.1')+':9090/ui','_blank')}
 function rebootRouter(){if(!confirm('重启路由器？'))return;if(!confirm('再次确认？'))return;alert('正在重启...');fetch('/api/restart_router',{method:'POST'})}
 
+// ========== 绑定事件 ==========
 document.getElementById('refreshBtn').onclick=loadAll
 document.getElementById('btnLuci').onclick=goLuci
 document.getElementById('btn9090').onclick=go9090
 document.getElementById('btnReboot').onclick=rebootRouter
-document.getElementById('toolModal').onclick=function(e){if(e.target===this)closeToolModal()}
+
+// 工具按钮
+document.getElementById('btnNew').onclick=function(){populateEditSelect();openModal('newModal')}
+document.getElementById('btnEdit').onclick=function(){populateEditSelect();openModal('editModal')}
+document.getElementById('btnDel').onclick=function(){populateDelSelect();openModal('delModal')}
+document.getElementById('btnLog').onclick=function(){populateLogSelect();openModal('logModal')}
+document.getElementById('btnUpload').onclick=function(){document.getElementById('fileInput').click()}
+document.getElementById('btnSync').onclick=function(){runSimpleTool('sync_github.py','📥 同步GitHub')}
+document.getElementById('btnGc').onclick=function(){runSimpleTool('gc_force.py','🧹 GC')}
+document.getElementById('btnCron').onclick=function(){runSimpleTool('cron_manager.py','⏰ 定时')}
+document.getElementById('btnKill').onclick=function(){runSimpleTool('kill_top_process.py','💣 清理')}
+document.getElementById('btnCache').onclick=function(){runSimpleTool('clean_apk_cache.py','🧹 缓存')}
+
+// 文件上传
+var fileInput = document.createElement('input')
+fileInput.type = 'file'
+fileInput.accept = '.py'
+fileInput.style.display = 'none'
+fileInput.onchange = uploadFile
+document.body.appendChild(fileInput)
+document.getElementById('btnUpload').onclick = function(){fileInput.click()}
+
+document.getElementById('toolModal').onclick=function(e){if(e.target===this)closeModal('toolModal')}
 
 fetchRouterIP();loadAll();setInterval(loadAll,10000)
-})();
 </script>
 </body></html>
 '''
