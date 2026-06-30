@@ -6,10 +6,11 @@
 屏蔽stdout/stderr输出至/dev/null，不读写闪存，无日志文件占用存储空间
 保留下方备注方便查看脚本详情
 """
-beizhu = "📈 面板程序 (优化版)"
+beizhu = "📈 面板程序 (系统工具增强版 + Cron管理 + APK缓存清理)"
 """
 ============================================================
-🐍 脚本面板 - 内存优化版（无自动保存同步框，备注为边框样式）
+🐍 脚本面板 - 系统工具增强版
+功能：脚本管理、内存显示、Cron定时任务、APK缓存清理、进程清理
 ============================================================
 """
 
@@ -23,6 +24,7 @@ import time
 import socket
 import signal
 import gc
+import glob
 from datetime import datetime
 from flask import Flask, render_template_string, jsonify, request
 
@@ -31,8 +33,9 @@ app = Flask(__name__)
 SCRIPTS_DIR = "/root/scripts"
 STATUS_FILE = "/tmp/script_status.json"
 HISTORY_FILE = "/tmp/script_history.json"
+CRONTAB_FILE = "/etc/crontabs/root"
 
-# ========== 同步框默认内容（仅作为默认值，修改不会自动保存） ==========
+# ========== 同步框默认内容 ==========
 tongbukuang = "https://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@github.com/evol5201314/exetest"
 
 def init_files():
@@ -42,6 +45,9 @@ def init_files():
         if not os.path.exists(f):
             with open(f, 'w') as fp:
                 json.dump({}, fp)
+    if not os.path.exists(CRONTAB_FILE):
+        with open(CRONTAB_FILE, 'w') as f:
+            f.write("# OpenWrt crontab\n")
 
 # ========== 提取 beizhu ==========
 def extract_beizhu(filepath):
@@ -115,16 +121,218 @@ def kill_process_on_port(port=5000):
             for pid in pids:
                 try:
                     os.kill(int(pid), signal.SIGKILL)
-                    print(f"✅ 已清理占用端口 {port} 的残留进程 (PID: {pid})")
                 except:
                     pass
             return True
-        else:
-            print(f"✅ 端口 {port} 空闲")
-            return True
+    except:
+        pass
+    return True
+
+# ========== 获取路由器IP ==========
+def get_router_ip():
+    try:
+        result = subprocess.run(["uci", "get", "network.lan.ipaddr"], capture_output=True, text=True, timeout=2)
+        ip = result.stdout.strip()
+        if ip:
+            return ip
+    except:
+        pass
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except:
+        pass
+    return "192.168.1.1"
+
+# ========== 获取内存信息 ==========
+def get_meminfo():
+    try:
+        with open('/proc/meminfo', 'r') as f:
+            lines = f.readlines()
+        meminfo = {}
+        for line in lines:
+            if ':' in line:
+                key, val = line.split(':', 1)
+                val = val.strip().split()[0]
+                meminfo[key] = int(val)
+        total = meminfo.get('MemTotal', 0)
+        available = meminfo.get('MemAvailable', meminfo.get('MemFree', 0))
+        used = total - available if total > available else 0
+        return {
+            'total_kb': total,
+            'used_kb': used,
+            'available_kb': available,
+            'percent': round((used / total * 100) if total > 0 else 0, 1)
+        }
+    except:
+        return {'total_kb': 0, 'used_kb': 0, 'available_kb': 0, 'percent': 0}
+
+# ========== APK 缓存管理 ==========
+def get_apk_cache_size():
+    cache_dir = "/var/cache/apk/"
+    if not os.path.exists(cache_dir):
+        return 0
+    total_size = 0
+    try:
+        for root, dirs, files in os.walk(cache_dir):
+            for f in files:
+                fp = os.path.join(root, f)
+                if os.path.exists(fp):
+                    total_size += os.path.getsize(fp)
+    except:
+        pass
+    return round(total_size / (1024 * 1024), 2)
+
+# ========== 获取高内存进程（用于清理） ==========
+def get_top_memory_processes(exclude_pid=None, limit=10):
+    processes = []
+    exclude_pid = exclude_pid or os.getpid()
+    sys_keywords = ['init', 'procd', 'logd', 'ubusd', 'netd', 'ueventd', 
+                    'syslogd', 'klogd', 'watchdog', 'hotplug', 'ntpd',
+                    'sshd', 'dropbear', 'kthreadd', 'ksoftirqd', 'kworker',
+                    'bdflush', 'kswapd', 'khugepaged', 'kcompactd']
+    try:
+        for pid_path in glob.glob('/proc/[0-9]*/statm'):
+            try:
+                pid = int(pid_path.split('/')[2])
+                if pid == exclude_pid or pid <= 10:
+                    continue
+                try:
+                    with open(f'/proc/{pid}/status', 'r') as f:
+                        status_lines = f.readlines()
+                    name = ''
+                    for line in status_lines:
+                        if line.startswith('Name:'):
+                            name = line.split(':', 1)[1].strip()
+                            break
+                except:
+                    continue
+                if name.startswith('[') and name.endswith(']'):
+                    continue
+                skip = False
+                for kw in sys_keywords:
+                    if kw in name.lower():
+                        skip = True
+                        break
+                if skip:
+                    continue
+                try:
+                    with open(f'/proc/{pid}/cmdline', 'rb') as f:
+                        cmdline_bytes = f.read()
+                    cmdline = cmdline_bytes.replace(b'\x00', b' ').decode('utf-8', errors='ignore').strip()
+                    if not cmdline:
+                        cmdline = name
+                except:
+                    cmdline = name
+                if cmdline in ['sh', 'bash', 'ps', 'grep', 'awk', 'sed', 'cut', 'top', 'netstat', 'lsof']:
+                    continue
+                rss_kb = 0
+                try:
+                    with open(f'/proc/{pid}/statm', 'r') as f:
+                        statm = f.read().split()
+                        if len(statm) >= 2:
+                            rss_kb = int(statm[1]) * 4
+                except:
+                    pass
+                if rss_kb < 1024:
+                    continue
+                is_script = '/root/scripts/' in cmdline
+                processes.append({
+                    'pid': pid,
+                    'name': name,
+                    'cmdline': cmdline[:200],
+                    'rss_kb': rss_kb,
+                    'is_script': is_script
+                })
+            except:
+                continue
+        processes.sort(key=lambda x: x['rss_kb'], reverse=True)
+        return processes[:limit]
     except Exception as e:
-        print(f"⚠️ 端口检测跳过: {e}")
+        return []
+
+def kill_process(pid):
+    try:
+        os.kill(pid, signal.SIGKILL)
         return True
+    except:
+        return False
+
+# ========== Cron 操作 ==========
+def get_cron_jobs():
+    jobs = []
+    try:
+        if not os.path.exists(CRONTAB_FILE):
+            return jobs
+        with open(CRONTAB_FILE, 'r') as f:
+            lines = f.readlines()
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            parts = line.split()
+            if len(parts) >= 6:
+                schedule = ' '.join(parts[:5])
+                command = ' '.join(parts[5:])
+                is_script = '/root/scripts/' in command and '.py' in command
+                script_name = None
+                if is_script:
+                    for part in command.split():
+                        if '/root/scripts/' in part and part.endswith('.py'):
+                            script_name = os.path.basename(part)
+                            break
+                jobs.append({
+                    'schedule': schedule,
+                    'command': command,
+                    'is_script': is_script,
+                    'script_name': script_name,
+                    'full_line': line
+                })
+    except:
+        pass
+    return jobs
+
+def add_cron_job(schedule, command):
+    try:
+        if not os.path.exists(CRONTAB_FILE):
+            with open(CRONTAB_FILE, 'w') as f:
+                f.write("# OpenWrt crontab\n")
+        with open(CRONTAB_FILE, 'r') as f:
+            lines = f.readlines()
+        for line in lines:
+            if line.strip() == f"{schedule} {command}":
+                return False, "该定时任务已存在"
+        with open(CRONTAB_FILE, 'a') as f:
+            f.write(f"{schedule} {command}\n")
+        subprocess.run(['/etc/init.d/cron', 'restart'], 
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+        return True, "添加成功"
+    except Exception as e:
+        return False, str(e)
+
+def delete_cron_job(full_line):
+    try:
+        with open(CRONTAB_FILE, 'r') as f:
+            lines = f.readlines()
+        new_lines = []
+        deleted = False
+        for line in lines:
+            if line.strip() == full_line.strip():
+                deleted = True
+                continue
+            new_lines.append(line)
+        if not deleted:
+            return False, "未找到该任务"
+        with open(CRONTAB_FILE, 'w') as f:
+            f.writelines(new_lines)
+        subprocess.run(['/etc/init.d/cron', 'restart'],
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+        return True, "删除成功"
+    except Exception as e:
+        return False, str(e)
 
 # ========== 获取脚本列表 ==========
 def get_scripts():
@@ -168,13 +376,102 @@ def api_scripts():
 def sync_config():
     return jsonify({'tongbukuang': tongbukuang})
 
-# ========== 运行脚本（优化内存和资源释放） ==========
+@app.route('/api/meminfo')
+def api_meminfo():
+    return jsonify(get_meminfo())
+
+@app.route('/api/router_ip')
+def api_router_ip():
+    return jsonify({'ip': get_router_ip()})
+
+@app.route('/api/apk_cache_size')
+def api_apk_cache_size():
+    return jsonify({'size_mb': get_apk_cache_size()})
+
+@app.route('/api/top_processes')
+def api_top_processes():
+    procs = get_top_memory_processes(limit=10)
+    return jsonify([{
+        'pid': p['pid'],
+        'name': p['name'],
+        'cmdline': p['cmdline'],
+        'rss_mb': round(p['rss_kb'] / 1024, 1),
+        'is_script': p['is_script']
+    } for p in procs])
+
+# ========== Cron 路由 ==========
+@app.route('/api/cron_jobs')
+def api_cron_jobs():
+    return jsonify(get_cron_jobs())
+
+@app.route('/api/cron_add', methods=['POST'])
+def api_cron_add():
+    data = request.json
+    schedule = data.get('schedule', '').strip()
+    command = data.get('command', '').strip()
+    if not schedule or not command:
+        return jsonify({'error': '请填写完整信息'}), 400
+    parts = schedule.split()
+    if len(parts) != 5:
+        return jsonify({'error': 'Cron 格式错误，应为: 分 时 日 月 周'}), 400
+    success, msg = add_cron_job(schedule, command)
+    if success:
+        return jsonify({'message': f'✅ {msg}'})
+    else:
+        return jsonify({'error': msg}), 500
+
+@app.route('/api/cron_delete', methods=['POST'])
+def api_cron_delete():
+    data = request.json
+    full_line = data.get('full_line', '').strip()
+    if not full_line:
+        return jsonify({'error': '请指定要删除的任务'}), 400
+    success, msg = delete_cron_job(full_line)
+    if success:
+        return jsonify({'message': f'✅ {msg}'})
+    else:
+        return jsonify({'error': msg}), 500
+
+# ========== APK 缓存清理 ==========
+@app.route('/api/apk_clean_cache', methods=['POST'])
+def api_apk_clean_cache():
+    try:
+        result = subprocess.run(
+            ['apk', 'cache', 'clean'],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        if result.returncode == 0:
+            new_size = get_apk_cache_size()
+            return jsonify({
+                'message': f'✅ 缓存已清理，当前缓存 {new_size}MB',
+                'size_mb': new_size
+            })
+        else:
+            result = subprocess.run(
+                ['apk', 'cache', 'purge'],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if result.returncode == 0:
+                new_size = get_apk_cache_size()
+                return jsonify({
+                    'message': f'✅ 缓存已清理（purge），当前缓存 {new_size}MB',
+                    'size_mb': new_size
+                })
+            else:
+                return jsonify({'error': f'清理失败: {result.stderr}'}), 500
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# ========== 运行脚本 ==========
 @app.route('/api/run/<name>', methods=['POST'])
 def run_script(name):
     path = os.path.join(SCRIPTS_DIR, name)
     if not os.path.exists(path):
         return jsonify({'error': '脚本不存在'}), 404
-    
     with open(STATUS_FILE, 'r') as f:
         status_data = json.load(f)
     old_pid = status_data.get(name, {}).get('pid')
@@ -184,11 +481,9 @@ def run_script(name):
             return jsonify({'error': f'脚本 {name} 正在运行中 (PID: {old_pid})'}), 400
         except OSError:
             pass
-    
     status_data[name] = {'status': 'running', 'pid': None}
     with open(STATUS_FILE, 'w') as f:
         json.dump(status_data, f)
-    
     try:
         proc = subprocess.Popen(
             ['python3', path],
@@ -203,7 +498,6 @@ def run_script(name):
         status_data[name]['pid'] = pid
         with open(STATUS_FILE, 'w') as f:
             json.dump(status_data, f)
-        
         def bg_monitor():
             try:
                 stdout, stderr = proc.communicate(timeout=300)
@@ -225,7 +519,6 @@ def run_script(name):
                 if proc.stderr:
                     proc.stderr.close()
                 gc.collect()
-            
             with open(STATUS_FILE, 'r') as f:
                 status_data = json.load(f)
             status_data[name]['status'] = 'success' if returncode == 0 else 'failed'
@@ -233,7 +526,6 @@ def run_script(name):
             status_data[name]['last_output'] = output[:10000]
             with open(STATUS_FILE, 'w') as f:
                 json.dump(status_data, f)
-            
             with open(HISTORY_FILE, 'r') as f:
                 history = json.load(f)
             history.setdefault(name, []).append({
@@ -245,13 +537,12 @@ def run_script(name):
                 history[name] = history[name][-50:]
             with open(HISTORY_FILE, 'w') as f:
                 json.dump(history, f)
-        
         threading.Thread(target=bg_monitor, daemon=True).start()
         return jsonify({'message': f'✅ {name} 已启动 (PID: {pid})'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-# ========== 停止脚本（强效清理） ==========
+# ========== 停止脚本 ==========
 @app.route('/api/stop/<name>', methods=['POST'])
 def stop_script(name):
     with open(STATUS_FILE, 'r') as f:
@@ -287,7 +578,64 @@ def stop_script(name):
     if killed:
         return jsonify({'message': f'✅ {name} 已停止 (PID: {pid})'})
     else:
-        return jsonify({'message': f'ℹ️ {name} 状态已重置 (进程不存在或已结束)'})
+        return jsonify({'message': f'ℹ️ {name} 状态已重置'})
+
+# ========== 清理高内存进程 ==========
+@app.route('/api/kill_top_process', methods=['POST'])
+def kill_top_process():
+    exclude_pid = os.getpid()
+    top_procs = get_top_memory_processes(exclude_pid=exclude_pid, limit=10)
+    if not top_procs:
+        return jsonify({'error': '未找到可清理的进程'}), 404
+    target = top_procs[0]
+    pid = target['pid']
+    name = target['name']
+    rss_mb = round(target['rss_kb'] / 1024, 1)
+    is_script = target['is_script']
+    if not kill_process(pid):
+        return jsonify({'error': f'杀进程 {pid} 失败'}), 500
+    result_msg = f'🔪 已杀掉进程 PID:{pid} ({name})，内存占用 {rss_mb}MB'
+    try:
+        subprocess.run(['sync'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+        with open('/proc/sys/vm/drop_caches', 'w') as f:
+            f.write('3')
+        result_msg += '；🧹 缓存已清理'
+    except:
+        pass
+    gc.collect()
+    result_msg += '；♻️ 内存回收完成'
+    restarted = False
+    script_name = None
+    if is_script:
+        for part in target['cmdline'].split():
+            if '/root/scripts/' in part and part.endswith('.py'):
+                script_name = os.path.basename(part)
+                break
+        if script_name:
+            script_path = os.path.join(SCRIPTS_DIR, script_name)
+            if os.path.exists(script_path):
+                with app.test_client() as client:
+                    resp = client.post(f'/api/run/{script_name}')
+                    if resp.status_code == 200:
+                        restarted = True
+                        result_msg += f'；✅ 已自动重启脚本 {script_name}'
+                    else:
+                        result_msg += f'；⚠️ 自动重启脚本 {script_name} 失败'
+    return jsonify({
+        'message': result_msg,
+        'killed': {'pid': pid, 'name': name, 'rss_mb': rss_mb},
+        'restarted': restarted,
+        'script_name': script_name
+    })
+
+# ========== 重启路由器 ==========
+@app.route('/api/restart_router', methods=['POST'])
+def restart_router():
+    try:
+        subprocess.Popen(['reboot'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return jsonify({'message': '✅ 路由器正在重启...'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 # ========== 日志 ==========
 @app.route('/api/log/<name>')
@@ -384,7 +732,7 @@ def upload_script():
     file.save(path)
     return jsonify({'message': f'✅ {file.filename} 上传成功'})
 
-# ========== GitHub 同步（已移除自动保存功能） ==========
+# ========== GitHub 同步 ==========
 @app.route('/api/sync_github', methods=['POST'])
 def sync_github():
     data = request.json or {}
@@ -425,9 +773,8 @@ def sync_github():
                         f.write(file_resp.text)
                     downloaded.append(file_name)
             except Exception as e:
-                print(f"下载 {file_name} 出错: {e}")
+                pass
         if downloaded:
-            # 不再自动保存 tongbukuang，也不重启面板
             return jsonify({'message': f'✅ 同步成功，共 {len(downloaded)} 个脚本'})
         else:
             return jsonify({'message': '⚠️ 未成功下载任何文件'})
@@ -440,7 +787,7 @@ def force_gc():
     gc.collect()
     return jsonify({'message': '✅ 垃圾回收已执行'})
 
-# ==================== HTML 模板（备注改为边框样式） ====================
+# ==================== HTML 模板 ====================
 HTML = '''<!DOCTYPE html>
 <html>
 <head>
@@ -454,15 +801,26 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .header{background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;padding:20px 24px;border-radius:12px;margin-bottom:20px}
 .header h1{font-size:22px}.header .sub{opacity:.8;font-size:13px;margin-top:4px}
 .stats{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px}
-.stat-card{background:#fff;padding:12px 20px;border-radius:10px;box-shadow:0 1px 4px rgba(0,0,0,.06);flex:1;min-width:80px}
+.stat-card{background:#fff;padding:12px 20px;border-radius:10px;box-shadow:0 1px 4px rgba(0,0,0,.06);flex:1;min-width:70px}
 .stat-card .num{font-size:24px;font-weight:700;color:#333}
 .stat-card .label{font-size:12px;color:#999}
-.actions-bar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}
-.actions-bar button{padding:8px 18px;border:none;border-radius:8px;cursor:pointer;font-size:14px;font-weight:500}
+.stat-card .mem-bar-wrap{width:100%;height:4px;background:#e0e0e0;border-radius:2px;margin-top:6px;overflow:hidden}
+.stat-card .mem-bar{height:100%;border-radius:2px;transition:width 0.3s}
+.actions-bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;padding:8px 12px;background:#f8f9fa;border-radius:8px}
+.actions-bar .sep{color:#ccc;font-size:20px;font-weight:300;display:flex;align-items:center}
+.actions-bar button{padding:6px 14px;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500}
+.actions-bar .group-label{font-size:11px;color:#999;font-weight:600;display:flex;align-items:center;margin-right:2px}
 .btn-new{background:#667eea;color:#fff}.btn-new:hover{background:#5a6fd6}
 .btn-upload{background:#4caf50;color:#fff}.btn-upload:hover{background:#43a047}
 .btn-sync{background:#ff6b6b;color:#fff}.btn-sync:hover{background:#e55a5a}
 .btn-gc{background:#607d8b;color:#fff}.btn-gc:hover{background:#455a64}
+.btn-cron{background:#00897b;color:#fff}.btn-cron:hover{background:#00695c}
+.btn-luci{background:#1565c0;color:#fff}.btn-luci:hover{background:#0d47a1}
+.btn-9090{background:#e65100;color:#fff}.btn-9090:hover{background:#bf360c}
+.btn-reboot{background:#c62828;color:#fff}.btn-reboot:hover{background:#b71c1c}
+.btn-kill{background:#7b1fa2;color:#fff}.btn-kill:hover{background:#4a148c}
+.btn-kill:disabled{opacity:.5;cursor:not-allowed}
+.btn-cache{background:#00695c;color:#fff}.btn-cache:hover{background:#004d40}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}
 .card{background:#fff;border-radius:10px;padding:16px 18px;box-shadow:0 1px 4px rgba(0,0,0,.06);border-left:4px solid #ddd}
 .card.idle{border-left-color:#90a4ae}
@@ -475,18 +833,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 @keyframes pulse{0%,100%{border-left-color:#ff9800}50%{border-left-color:#ffcc80}}
 .card .top{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px}
 .card .name{font-weight:600;font-size:15px;word-break:break-all}
-/* --- 备注行样式（边框，无背景色） --- */
-.remark-line {
-    font-size: 16px;
-    font-weight: normal;
-    color: #333;
-    border: 1px solid #d0d0d0;
-    border-radius: 20px;
-    padding: 2px 16px;
-    display: inline-block;
-    margin: 4px 0 2px 0;
-    background: #fafafa;
-}
+.remark-line{font-size:16px;font-weight:normal;color:#333;border:1px solid #d0d0d0;border-radius:20px;padding:2px 16px;display:inline-block;margin:4px 0 2px 0;background:#fafafa}
 .badge{font-size:11px;padding:2px 12px;border-radius:20px;font-weight:500;flex-shrink:0;margin-left:10px}
 .badge.idle{background:#eceff1;color:#546e7a}
 .badge.running{background:#fff3e0;color:#e65100}
@@ -521,19 +868,30 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .empty{padding:60px 20px;text-align:center;color:#999}
 .refresh-btn{background:#fff;border:1px solid #ddd;padding:6px 16px;border-radius:8px;cursor:pointer;font-size:13px}
 .refresh-btn:hover{background:#f5f5f5}
-input, textarea{width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;margin:6px 0;font-size:14px;font-family:inherit}
+input, textarea, select{width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;margin:6px 0;font-size:14px;font-family:inherit}
 textarea{min-height:180px;font-family:monospace;resize:vertical}
+select{appearance:auto;background:#fff}
 .modal-box .form-actions{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
 .modal-box .form-actions button{padding:6px 20px;border:none;border-radius:6px;cursor:pointer;font-weight:500}
 .btn-primary{background:#667eea;color:#fff}
 .btn-primary:hover{background:#5a6fd6}
 .btn-secondary{background:#eceff1;color:#333}
 .btn-secondary:hover{background:#d5d9de}
+.btn-danger{background:#f44336;color:#fff}
+.btn-danger:hover{background:#d32f2f}
+.btn-success{background:#4caf50;color:#fff}
+.btn-success:hover{background:#388e3c}
 .sync-input-group{display:flex;flex-direction:column;gap:4px;margin:8px 0}
 .sync-input-group label{font-weight:500;font-size:14px;color:#555}
 .sync-input-group input{width:100%;padding:8px 12px;border:1px solid #ddd;border-radius:6px;font-size:14px;font-family:monospace}
 .sync-input-group .hint{font-size:12px;color:#999;margin-top:2px}
-@media(max-width:600px){.grid{grid-template-columns:1fr}}
+.cron-item{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;border-bottom:1px solid #f0f0f0;flex-wrap:wrap;gap:6px}
+.cron-item .cron-sched{font-family:monospace;font-size:13px;color:#333;background:#f5f5f5;padding:2px 10px;border-radius:4px}
+.cron-item .cron-cmd{font-size:13px;color:#555;word-break:break-all;flex:1;margin:0 10px}
+.cron-item .cron-actions button{padding:2px 12px;border:none;border-radius:4px;cursor:pointer;font-size:12px}
+.cron-empty{color:#999;padding:20px;text-align:center}
+.cron-grid{max-height:300px;overflow-y:auto;border:1px solid #eee;border-radius:8px}
+@media(max-width:600px){.grid{grid-template-columns:1fr}.actions-bar{flex-direction:column;align-items:stretch}}
 </style>
 </head>
 <body>
@@ -547,15 +905,39 @@ textarea{min-height:180px;font-family:monospace;resize:vertical}
 <div class="stat-card"><div class="num" id="running">0</div><div class="label">🔄 运行中</div></div>
 <div class="stat-card"><div class="num" id="success">0</div><div class="label">✅ 成功</div></div>
 <div class="stat-card"><div class="num" id="failed">0</div><div class="label">❌ 失败</div></div>
-<div class="stat-card" style="flex:0"><button class="refresh-btn" onclick="load()">🔄 刷新</button></div>
+<div class="stat-card" id="memCard">
+<div class="num" id="memText">-- MB</div>
+<div class="label" id="memLabel">💾 内存使用</div>
+<div class="mem-bar-wrap"><div class="mem-bar" id="memBar" style="width:0%;background:#4caf50"></div></div>
 </div>
+<div class="stat-card" id="cacheCard">
+<div class="num" id="cacheSize">-- MB</div>
+<div class="label">📦 APK缓存</div>
+</div>
+<div class="stat-card" style="flex:0"><button class="refresh-btn" onclick="loadAll()">🔄 刷新</button></div>
+</div>
+
+<!-- 按钮组1: 脚本管理 -->
 <div class="actions-bar">
+<span class="group-label">📜 脚本</span>
 <button class="btn-new" onclick="showNewModal()">➕ 新建</button>
 <button class="btn-upload" onclick="document.getElementById('fileInput').click()">📤 上传</button>
 <button class="btn-sync" onclick="showSyncModal()">📥 同步</button>
 <button class="btn-gc" onclick="forceGC()">🧹 GC</button>
+<button class="btn-cron" onclick="showCronModal()">⏰ 定时</button>
 <input type="file" id="fileInput" accept=".py" style="display:none" onchange="uploadFile(this)">
 </div>
+
+<!-- 按钮组2: 路由器工具 -->
+<div class="actions-bar">
+<span class="group-label">⚙️ 路由</span>
+<button class="btn-luci" onclick="goLuci()">🌐 路由器</button>
+<button class="btn-9090" onclick="go9090()">🔧 后端</button>
+<button class="btn-reboot" onclick="rebootRouter()">🔄 重启路由</button>
+<button class="btn-kill" id="killBtn" onclick="killTopProcess()">💣 清理进程</button>
+<button class="btn-cache" onclick="cleanApkCache()">🧹 清理缓存</button>
+</div>
+
 <div class="grid" id="grid"></div>
 </div>
 
@@ -583,121 +965,346 @@ textarea{min-height:180px;font-family:monospace;resize:vertical}
 <div class="sync-input-group">
 <label>仓库地址（含 Token）</label>
 <input type="text" id="syncTongbukuang" placeholder="https://token@github.com/用户名/仓库名">
-<div class="hint">💡 格式：https://{token}@github.com/{用户名}/{仓库名} 或直接输入仓库地址</div>
+<div class="hint">💡 格式：https://{token}@github.com/{用户名}/{仓库名}</div>
 </div>
 <div class="form-actions"><button class="btn-primary" onclick="doSync()">📥 开始同步</button><button class="btn-secondary" onclick="closeSync()">取消</button></div>
+</div></div>
+
+<!-- Cron 管理弹窗 -->
+<div class="modal" id="cronModal"><div class="modal-box">
+<span class="close" onclick="closeCron()">&times;</span>
+<h2>⏰ 定时任务管理 (Cron)</h2>
+<div style="margin:12px 0;background:#f5f7fa;padding:12px;border-radius:8px">
+<div style="display:flex;gap:8px;flex-wrap:wrap">
+<div style="flex:2;min-width:180px"><label>执行时间</label><input type="text" id="cronSchedule" placeholder="分 时 日 月 周" value="0 */6 * * *"></div>
+<div style="flex:3;min-width:200px"><label>执行命令</label>
+<select id="cronCommand" style="margin:6px 0">
+<option value="">-- 选择脚本 --</option>
+</select>
+</div>
+</div>
+<div style="margin-top:6px"><label>自定义命令</label><input type="text" id="cronCustomCmd" placeholder="或直接输入完整命令"></div>
+<div class="form-actions"><button class="btn-success" onclick="addCronJob()">➕ 添加任务</button></div>
+<div style="margin-top:8px;font-size:12px;color:#888">💡 示例: <code>0 */6 * * *</code> = 每6小时执行一次</div>
+</div>
+<div style="margin-top:12px"><label>📋 当前任务列表</label>
+<div class="cron-grid" id="cronList"><div class="cron-empty">加载中...</div></div>
+</div>
+<div class="form-actions"><button class="btn-secondary" onclick="closeCron()">关闭</button></div>
 </div></div>
 
 <!-- 日志弹窗 -->
 <div class="modal" id="modal"><div class="modal-box"><span class="close" onclick="closeModal()">&times;</span><h2 id="mTitle">日志</h2><div class="meta" id="mMeta"></div><pre id="mContent">暂无</pre></div></div>
 
 <script>
-function st(s){const map={idle:'待执行',running:'运行中',success:'成功',failed:'失败',timeout:'超时',error:'错误',stopped:'已停止'};return map[s]||s}
-function badge(s){return`<span class="badge ${s}">${st(s)}</span>`}
-function load(){fetch('/api/scripts').then(r=>r.json()).then(data=>{
-const g=document.getElementById('grid')
-if(!data||!data.length){g.innerHTML='<div class="empty">📂 暂无脚本<br><small>点击 "新建"、"上传" 或 "同步" 添加脚本</small></div>';updateStats(0,0,0,0);return}
-let rn=0,su=0,fa=0
-g.innerHTML=data.map(s=>{const st=s.status||'idle';if(st==='running')rn++;if(st==='success')su++;if(['failed','timeout','error'].includes(st))fa++
-return`<div class="card ${st}">
-<div class="top">
-<span class="name">${s.name}</span>
-${badge(st)}
-</div>
-${s.remark ? `<div class="remark-line">${s.remark}</div>` : ''}
-<div class="info">
-<span class="lbl">📏</span> ${(s.size/1024).toFixed(1)}KB &nbsp; <span class="lbl">🕐</span> ${s.mtime}<br>
-<span class="lbl">⏱</span> ${s.last_run||'从未运行'} &nbsp; <span class="lbl">📋</span> ${s.history_count||0}次
-</div>
-<div class="actions">
-<button class="btn-run" onclick="run('${s.name}')" ${st==='running'?'disabled':''}>▶ 运行</button>
-${st==='running' ? `<button class="btn-stop" onclick="stop('${s.name}')">⏹ 停止</button>` : ''}
-<button class="btn-edit" onclick="showEdit('${s.name}')">✏️ 编辑</button>
-<button class="btn-del" onclick="del('${s.name}')">🗑 删除</button>
-<button class="btn-log" onclick="log('${s.name}')">📄 日志</button>
-</div>
-</div>`
-}).join('')
-updateStats(data.length,rn,su,fa)
-})}
-function updateStats(total,rn,su,fa){document.getElementById('total').textContent=total;document.getElementById('running').textContent=rn;document.getElementById('success').textContent=su;document.getElementById('failed').textContent=fa}
-function run(n){if(!confirm(`确定执行 "${n}" ?`))return;fetch(`/api/run/${encodeURIComponent(n)}`,{method:'POST'}).then(r=>r.json()).then(d=>{alert(d.message||d.error);load()})}
-function stop(n){if(!confirm(`确定停止 "${n}" 吗？`))return;fetch(`/api/stop/${encodeURIComponent(n)}`,{method:'POST'}).then(r=>r.json()).then(d=>{alert(d.message||d.error);load()})}
-function log(n){fetch(`/api/log/${encodeURIComponent(n)}`).then(r=>r.json()).then(d=>{document.getElementById('mTitle').textContent='📄 '+n;document.getElementById('mMeta').textContent='状态: '+st(d.status);document.getElementById('mContent').textContent=d.output||'暂无输出';document.getElementById('modal').classList.add('active')})}
-function closeModal(){document.getElementById('modal').classList.remove('active')}
-document.getElementById('modal').addEventListener('click',function(e){if(e.target===this)closeModal()})
+var routerIP = '';
 
+// ========== 状态映射 ==========
+function st(s){const map={idle:'待执行',running:'运行中',success:'成功',failed:'失败',timeout:'超时',error:'错误',stopped:'已停止'};return map[s]||s}
+function badge(s){return'<span class="badge '+s+'">'+st(s)+'</span>'}
+
+// ========== 获取路由器IP ==========
+function fetchRouterIP(){
+    fetch('/api/router_ip').then(r=>r.json()).then(data=>{
+        routerIP = data.ip || window.location.hostname || '192.168.1.1';
+    }).catch(()=>{
+        routerIP = window.location.hostname || '192.168.1.1';
+    });
+}
+
+// ========== 加载内存信息 ==========
+function loadMem(){
+    fetch('/api/meminfo').then(r=>r.json()).then(data=>{
+        var total = data.total_kb || 0;
+        var used = data.used_kb || 0;
+        var totalMB = (total/1024).toFixed(0);
+        var usedMB = (used/1024).toFixed(0);
+        var percent = data.percent || 0;
+        document.getElementById('memText').textContent = usedMB + '/' + totalMB + ' MB';
+        document.getElementById('memLabel').textContent = '💾 内存使用 ' + percent + '%';
+        var bar = document.getElementById('memBar');
+        bar.style.width = Math.min(percent, 100) + '%';
+        if (percent > 85) bar.style.background = '#f44336';
+        else if (percent > 70) bar.style.background = '#ff9800';
+        else bar.style.background = '#4caf50';
+    }).catch(()=>{});
+}
+
+// ========== 加载APK缓存大小 ==========
+function loadApkCache(){
+    fetch('/api/apk_cache_size').then(r=>r.json()).then(data=>{
+        var size = data.size_mb || 0;
+        document.getElementById('cacheSize').textContent = size.toFixed(1) + ' MB';
+    }).catch(()=>{
+        document.getElementById('cacheSize').textContent = '-- MB';
+    });
+}
+
+// ========== 加载脚本列表 ==========
+function loadScripts(){
+    fetch('/api/scripts').then(r=>r.json()).then(data=>{
+        var g=document.getElementById('grid');
+        if(!data||!data.length){
+            g.innerHTML='<div class="empty">📂 暂无脚本<br><small>点击 "新建"、"上传" 或 "同步" 添加脚本</small></div>';
+            updateStats(0,0,0,0);
+            return;
+        }
+        var rn=0,su=0,fa=0;
+        g.innerHTML=data.map(function(s){
+            var st=s.status||'idle';
+            if(st==='running')rn++;
+            if(st==='success')su++;
+            if(['failed','timeout','error'].includes(st))fa++;
+            var remarkHtml = s.remark ? '<div class="remark-line">'+s.remark+'</div>' : '';
+            var stopBtn = st==='running' ? '<button class="btn-stop" onclick="stop(\''+s.name+'\')">⏹ 停止</button>' : '';
+            return '<div class="card '+st+'">'+
+                '<div class="top"><span class="name">'+s.name+'</span>'+badge(st)+'</div>'+
+                remarkHtml+
+                '<div class="info"><span class="lbl">📏</span> '+(s.size/1024).toFixed(1)+'KB &nbsp; <span class="lbl">🕐</span> '+s.mtime+
+                '<br><span class="lbl">⏱</span> '+(s.last_run||'从未运行')+' &nbsp; <span class="lbl">📋</span> '+(s.history_count||0)+'次</div>'+
+                '<div class="actions">'+
+                '<button class="btn-run" onclick="run(\''+s.name+'\')" '+(st==='running'?'disabled':'')+'>▶ 运行</button>'+
+                stopBtn+
+                '<button class="btn-edit" onclick="showEdit(\''+s.name+'\')">✏️ 编辑</button>'+
+                '<button class="btn-del" onclick="del(\''+s.name+'\')">🗑 删除</button>'+
+                '<button class="btn-log" onclick="log(\''+s.name+'\')">📄 日志</button>'+
+                '</div></div>';
+        }).join('');
+        updateStats(data.length,rn,su,fa);
+    }).catch(function(err){});
+}
+
+function updateStats(total,rn,su,fa){
+    document.getElementById('total').textContent=total;
+    document.getElementById('running').textContent=rn;
+    document.getElementById('success').textContent=su;
+    document.getElementById('failed').textContent=fa;
+}
+
+function loadAll(){ loadScripts(); loadMem(); loadApkCache(); }
+
+// ========== 脚本操作 ==========
+function run(n){if(!confirm('确定执行 "'+n+'" ?'))return;fetch('/api/run/'+encodeURIComponent(n),{method:'POST'}).then(r=>r.json()).then(d=>{alert(d.message||d.error);loadAll();})}
+function stop(n){if(!confirm('确定停止 "'+n+'" 吗？'))return;fetch('/api/stop/'+encodeURIComponent(n),{method:'POST'}).then(r=>r.json()).then(d=>{alert(d.message||d.error);loadAll();})}
+function del(n){if(!confirm('确定删除 "'+n+'" 吗？'))return;fetch('/api/delete/'+encodeURIComponent(n),{method:'POST'}).then(r=>r.json()).then(d=>{alert(d.message||d.error);loadAll();})}
+
+function log(n){fetch('/api/log/'+encodeURIComponent(n)).then(r=>r.json()).then(d=>{document.getElementById('mTitle').textContent='📄 '+n;document.getElementById('mMeta').textContent='状态: '+st(d.status);document.getElementById('mContent').textContent=d.output||'暂无输出';document.getElementById('modal').classList.add('active')})}
+function closeModal(){document.getElementById('modal').classList.remove('active')}
+document.getElementById('modal').addEventListener('click',function(e){if(e.target===this)closeModal()});
+
+// ========== 新建脚本 ==========
 function showNewModal(){document.getElementById('newModal').classList.add('active')}
 function closeNew(){document.getElementById('newModal').classList.remove('active')}
 function createScript(){
-const name=document.getElementById('newName').value.trim()
-const content=document.getElementById('newContent').value
-if(!name){alert('请输入文件名');return}
-if(!content){alert('代码内容不能为空');return}
-fetch('/api/new',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,content})})
-.then(r=>r.json()).then(d=>{alert(d.message||d.error);if(d.message){closeNew();document.getElementById('newName').value='';document.getElementById('newContent').value='';load()}})
+    var name=document.getElementById('newName').value.trim();
+    var content=document.getElementById('newContent').value;
+    if(!name){alert('请输入文件名');return}
+    if(!content){alert('代码内容不能为空');return}
+    fetch('/api/new',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,content})})
+    .then(r=>r.json()).then(d=>{alert(d.message||d.error);if(d.message){closeNew();document.getElementById('newName').value='';document.getElementById('newContent').value='';loadAll()}})
 }
 
-let editingName=''
+// ========== 编辑脚本 ==========
+var editingName='';
 function showEdit(name){
-editingName=name
-document.getElementById('editFileName').textContent='📄 '+name
-fetch(`/api/get/${encodeURIComponent(name)}`).then(r=>r.json()).then(d=>{
-if(d.error){alert(d.error);return}
-document.getElementById('editContent').value=d.content||''
-document.getElementById('editModal').classList.add('active')
-}).catch(err=>alert('获取脚本失败: '+err.message))
+    editingName=name;
+    document.getElementById('editFileName').textContent='📄 '+name;
+    fetch('/api/get/'+encodeURIComponent(name)).then(r=>r.json()).then(d=>{
+        if(d.error){alert(d.error);return}
+        document.getElementById('editContent').value=d.content||'';
+        document.getElementById('editModal').classList.add('active');
+    }).catch(function(err){alert('获取脚本失败: '+err.message)})
 }
 function closeEdit(){document.getElementById('editModal').classList.remove('active');editingName=''}
 function saveEdit(){
-const content=document.getElementById('editContent').value
-if(!content){alert('内容不能为空');return}
-fetch(`/api/edit/${encodeURIComponent(editingName)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content})})
-.then(r=>r.json()).then(d=>{alert(d.message||d.error);if(d.message){closeEdit();load()}})
+    var content=document.getElementById('editContent').value;
+    if(!content){alert('内容不能为空');return}
+    fetch('/api/edit/'+encodeURIComponent(editingName),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content})})
+    .then(r=>r.json()).then(d=>{alert(d.message||d.error);if(d.message){closeEdit();loadAll()}})
 }
 
-function del(name){if(!confirm(`确定删除 "${name}" 吗？`))return;fetch(`/api/delete/${encodeURIComponent(name)}`,{method:'POST'}).then(r=>r.json()).then(d=>{alert(d.message||d.error);load()})}
-
+// ========== 上传脚本 ==========
 function uploadFile(input){
-if(!input.files.length)return
-const file=input.files[0]
-const formData=new FormData()
-formData.append('file',file)
-fetch('/api/upload',{method:'POST',body:formData})
-.then(r=>r.json()).then(d=>{alert(d.message||d.error);if(d.message)load()})
-input.value=''
+    if(!input.files.length)return;
+    var file=input.files[0];
+    var formData=new FormData();
+    formData.append('file',file);
+    fetch('/api/upload',{method:'POST',body:formData})
+    .then(r=>r.json()).then(d=>{alert(d.message||d.error);if(d.message)loadAll()});
+    input.value='';
 }
 
+// ========== 同步 ==========
 function showSyncModal(){
-document.getElementById('syncModal').classList.add('active')
-fetch('/api/sync_config').then(r=>r.json()).then(data=>{
-document.getElementById('syncTongbukuang').value=data.tongbukuang||''
-})
+    document.getElementById('syncModal').classList.add('active');
+    fetch('/api/sync_config').then(r=>r.json()).then(data=>{
+        document.getElementById('syncTongbukuang').value=data.tongbukuang||'';
+    })
 }
 function closeSync(){document.getElementById('syncModal').classList.remove('active')}
 function doSync(){
-const val=document.getElementById('syncTongbukuang').value.trim()
-if(!val){alert('请输入仓库地址');return}
-if(!confirm(`将从以下地址同步脚本:\\n${val}\\n确定吗？`))return
-fetch('/api/sync_github',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tongbukuang:val})})
-.then(r=>r.json()).then(d=>{
-alert(d.message||d.error)
-if(d.message){
-closeSync()
-load()
-if(d.restart){
-setTimeout(function(){window.location.reload()}, 2000)
-}
-}
-})
+    var val=document.getElementById('syncTongbukuang').value.trim();
+    if(!val){alert('请输入仓库地址');return}
+    if(!confirm('将从以下地址同步脚本:\\n'+val+'\\n确定吗？'))return;
+    fetch('/api/sync_github',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tongbukuang:val})})
+    .then(r=>r.json()).then(d=>{alert(d.message||d.error);if(d.message){closeSync();loadAll()}})
 }
 
+// ========== 垃圾回收 ==========
 function forceGC(){
-if(!confirm('执行垃圾回收，可能会短暂卡顿，确定吗？'))return
-fetch('/api/gc',{method:'POST'}).then(r=>r.json()).then(d=>{alert(d.message);load()})
+    if(!confirm('执行垃圾回收，可能会短暂卡顿，确定吗？'))return;
+    fetch('/api/gc',{method:'POST'}).then(r=>r.json()).then(d=>{alert(d.message);loadAll()})
 }
 
-load();setInterval(load,10000)
+// ========== Cron 管理 ==========
+function showCronModal(){
+    document.getElementById('cronModal').classList.add('active');
+    loadCronList();
+    loadScriptsForCronSelect();
+}
+function closeCron(){document.getElementById('cronModal').classList.remove('active')}
+
+function loadScriptsForCronSelect(){
+    fetch('/api/scripts').then(r=>r.json()).then(data=>{
+        var sel=document.getElementById('cronCommand');
+        sel.innerHTML='<option value="">-- 选择脚本 --</option>';
+        if(data && data.length){
+            data.forEach(function(s){
+                var opt=document.createElement('option');
+                opt.value='python3 /root/scripts/'+s.name;
+                opt.textContent=s.name;
+                sel.appendChild(opt);
+            });
+        }
+    }).catch(function(){});
+}
+
+function loadCronList(){
+    var container=document.getElementById('cronList');
+    container.innerHTML='<div class="cron-empty">加载中...</div>';
+    fetch('/api/cron_jobs').then(r=>r.json()).then(data=>{
+        if(!data || !data.length){
+            container.innerHTML='<div class="cron-empty">📭 暂无定时任务</div>';
+            return;
+        }
+        var html='';
+        data.forEach(function(job){
+            var label = job.is_script ? '📜' : '⚙️';
+            html += '<div class="cron-item">'+
+                '<span class="cron-sched">'+job.schedule+'</span>'+
+                '<span class="cron-cmd">'+label+' '+escapeHtml(job.command)+'</span>'+
+                '<div class="cron-actions"><button class="btn-danger" onclick="deleteCron(\''+escapeHtml(job.full_line)+'\')">🗑</button></div>'+
+                '</div>';
+        });
+        container.innerHTML=html;
+    }).catch(function(){
+        container.innerHTML='<div class="cron-empty">⚠️ 加载失败</div>';
+    });
+}
+
+function escapeHtml(str){
+    if(!str)return '';
+    return str.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/'/g,'&#39;');
+}
+
+function addCronJob(){
+    var schedule=document.getElementById('cronSchedule').value.trim();
+    var cmdSelect=document.getElementById('cronCommand').value;
+    var customCmd=document.getElementById('cronCustomCmd').value.trim();
+    var command = cmdSelect || customCmd;
+    if(!schedule){alert('请输入执行时间');return}
+    if(!command){alert('请选择脚本或输入自定义命令');return}
+    var parts=schedule.split(/\s+/);
+    if(parts.length!==5){
+        alert('Cron 格式错误，应为: 分 时 日 月 周\n例如: 0 */6 * * *');
+        return;
+    }
+    fetch('/api/cron_add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({schedule:schedule,command:command})})
+    .then(r=>r.json()).then(d=>{
+        alert(d.message||d.error);
+        if(d.message){loadCronList();document.getElementById('cronCustomCmd').value='';}
+    }).catch(function(err){alert('请求失败: '+err.message)})
+}
+
+function deleteCron(fullLine){
+    if(!confirm('确定删除该定时任务吗？'))return;
+    fetch('/api/cron_delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({full_line:fullLine})})
+    .then(r=>r.json()).then(d=>{
+        alert(d.message||d.error);
+        if(d.message){loadCronList();}
+    }).catch(function(err){alert('删除失败: '+err.message)})
+}
+
+// ========== 清理高内存进程 ==========
+function killTopProcess(){
+    if(!confirm('🔪 将查找占用内存最高的进程并杀掉\n→ 自动清理系统缓存\n→ 自动触发内存回收\n如果是面板管理的脚本则自动重启\n确定执行吗？'))return;
+    var btn=document.getElementById('killBtn');
+    btn.disabled=true;
+    btn.textContent='⏳ 执行中...';
+    fetch('/api/kill_top_process',{method:'POST'})
+    .then(r=>r.json()).then(d=>{
+        if(d.error){alert('❌ '+d.error)}
+        else{alert(d.message||'执行完成')}
+        loadAll();
+        btn.disabled=false;
+        btn.textContent='💣 清理进程';
+    }).catch(function(err){
+        alert('❌ 执行失败: '+err.message);
+        btn.disabled=false;
+        btn.textContent='💣 清理进程';
+    })
+}
+
+// ========== APK 缓存清理 ==========
+function cleanApkCache(){
+    if(!confirm('🧹 将清理 apk 下载缓存（/var/cache/apk/）\n确定执行吗？'))return;
+    var btn = document.querySelector('.btn-cache');
+    var origText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '⏳ 清理中...';
+    fetch('/api/apk_clean_cache',{method:'POST'})
+    .then(r=>r.json()).then(d=>{
+        alert(d.message || d.error || '执行完成');
+        loadApkCache();
+        loadMem();
+        btn.disabled = false;
+        btn.textContent = origText;
+    }).catch(function(err){
+        alert('❌ 清理失败: '+err.message);
+        btn.disabled = false;
+        btn.textContent = origText;
+    })
+}
+
+// ========== 重启路由器 ==========
+function rebootRouter(){
+    if(!confirm('⚠️ 确定要重启路由器吗？\n面板将断开连接！'))return;
+    if(!confirm('⚠️ 再次确认：重启路由器？'))return;
+    alert('🔄 路由器正在重启，请稍后重新访问...');
+    fetch('/api/restart_router',{method:'POST'}).then(r=>r.json()).then(d=>{});
+}
+
+// ========== 进入后台 ==========
+function goLuci(){
+    if(routerIP){
+        window.open('http://'+routerIP+'/cgi-bin/luci', '_blank');
+    }else{
+        window.open('/cgi-bin/luci', '_blank');
+    }
+}
+
+function go9090(){
+    if(routerIP){
+        window.open('http://'+routerIP+':9090/ui', '_blank');
+    }else{
+        window.open('http://192.168.1.1:9090/ui', '_blank');
+    }
+}
+
+// ========== 启动 ==========
+fetchRouterIP();
+loadAll();
+setInterval(loadAll, 10000);
 </script>
 </body>
 </html>
