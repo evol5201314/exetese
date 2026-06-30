@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-===== 【OpenWrt 低内存专用优化说明】
-硬件环境：路由可用内存仅≈30M，精简python3，峰值内存控制最小化
-功能：脚本列表展示 + 运行/停止 + 按钮调用独立工具脚本
-"""
 beizhu = "📈 面板核心版 (所有功能独立为脚本)"
+
+"""
+===== 【OpenWrt 低内存专用优化说明】 =====
+硬件环境：路由可用内存仅≈30M，精简python3，峰值内存控制最小化
+功能：脚本列表展示 + 运行/停止，其他功能通过按钮调用独立脚本（即用即释放）
+"""
 
 import os, sys, json, subprocess, threading, signal, gc
 from datetime import datetime
@@ -13,7 +14,7 @@ from flask import Flask, render_template_string, jsonify, request
 
 app = Flask(__name__)
 SCRIPTS_DIR = "/root/scripts"
-TOOLS_DIR = "/root/tools"
+TOOLS_DIR = "/root/scripts/tools"
 STATUS_FILE = "/tmp/script_status.json"
 
 def init_files():
@@ -76,8 +77,9 @@ def get_scripts():
         return scripts
     with open(STATUS_FILE, 'r') as f:
         status_data = json.load(f)
+    # 只扫描根目录，不递归 tools/
     for fn in sorted(os.listdir(SCRIPTS_DIR)):
-        if fn.endswith('.py'):
+        if fn.endswith('.py') and os.path.isfile(os.path.join(SCRIPTS_DIR, fn)):
             p = os.path.join(SCRIPTS_DIR, fn)
             st = os.stat(p)
             s = status_data.get(fn, {'status': 'idle', 'pid': None})
@@ -136,7 +138,6 @@ def api_apk_cache_size():
 def api_router_ip():
     return jsonify({'ip': get_router_ip()})
 
-# ========== 运行脚本 ==========
 @app.route('/api/run/<name>', methods=['POST'])
 def run_script(name):
     path = os.path.join(SCRIPTS_DIR, name)
@@ -197,7 +198,6 @@ def run_script(name):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-# ========== 停止脚本 ==========
 @app.route('/api/stop/<name>', methods=['POST'])
 def stop_script(name):
     with open(STATUS_FILE, 'r') as f:
@@ -224,7 +224,6 @@ def stop_script(name):
     else:
         return jsonify({'message': f'ℹ️ {name} 状态已重置'})
 
-# ========== 查看日志（调用独立脚本） ==========
 @app.route('/api/run_tool', methods=['POST'])
 def run_tool():
     data = request.json
@@ -247,7 +246,6 @@ def run_tool():
     except Exception as e:
         return jsonify({'output': f'❌ 执行失败: {e}'})
 
-# ========== 重启路由器 ==========
 @app.route('/api/restart_router', methods=['POST'])
 def restart_router():
     try:
@@ -324,7 +322,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .modal-box{background:#fff;border-radius:14px;padding:24px;max-width:720px;width:94%;max-height:85vh;overflow-y:auto}
 .modal-box h2{font-size:17px;margin-bottom:4px}
 .modal-box .meta{font-size:13px;color:#888;margin-bottom:12px}
-.modal-box pre{background:#1e1e1e;color:#d4d4d4;padding:14px;border-radius:8px;font-size:12px;line-height:1.5;max-height:400px;overflow:auto;white-space:pre-wrap;word-break:break-all}
+.modal-box pre{background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:6px;font-size:12px;max-height:400px;overflow:auto;white-space:pre-wrap;word-break:break-all}
 .close{float:right;font-size:24px;cursor:pointer;color:#888}.close:hover{color:#333}
 input,textarea{width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;margin:6px 0;font-size:14px;font-family:inherit}
 textarea{min-height:180px;font-family:monospace;resize:vertical}
