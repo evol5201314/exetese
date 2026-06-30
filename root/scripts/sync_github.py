@@ -40,7 +40,7 @@ import urllib.error
 
 # ========== 配置区域（请修改） ==========
 CONFIG = {
-    "repo_url": "https://github.com/evol5201314/exetese",
+    "repo_url": "https://github.com/evol5201314/exetest",
     "branch": "main",
 }
 
