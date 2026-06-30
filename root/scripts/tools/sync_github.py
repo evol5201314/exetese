@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-beizhu = "📥 从 GitHub 同步脚本（镜像同步 /root/scripts/ 结构）"
+beizhu = "📥 面板同步工具（镜像同步 /root/scripts/）"
 
 """
 同步规则：
-  - 仓库根目录 .py → /root/scripts/
-  - 仓库 /tools/ 子目录 .py → /root/scripts/tools/
+  - 仓库 /root/scripts/ 子目录 → /root/scripts/
+  - 仓库 /root/scripts/tools/ 子目录 → /root/scripts/tools/
 """
 import os, sys, json, urllib.request, urllib.error
 
 DEBUG = False
 
 CONFIG = {
-    "repo_url": "https://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/evol5201314/exetese",
+    "repo_url": "https://github.com/evol5201314/exetest",
     "branch": "main",
 }
 
@@ -112,11 +112,13 @@ if __name__ == "__main__":
         print("❌ 未设置仓库地址")
         sys.exit(1)
     print("========================================")
-    print("🐍 GitHub 同步工具 (镜像同步)")
+    print("🐍 GitHub 同步工具 (面板版)")
     print("========================================")
-    ok1, msg1 = sync_dir(repo, "/root/scripts", "")
+    # 仓库 /root/scripts/ → /root/scripts/
+    ok1, msg1 = sync_dir(repo, "/root/scripts", "root/scripts")
     print(f"📁 /root/scripts/: {msg1}")
-    ok2, msg2 = sync_dir(repo, "/root/scripts/tools", "tools")
+    # 仓库 /root/scripts/tools/ → /root/scripts/tools/
+    ok2, msg2 = sync_dir(repo, "/root/scripts/tools", "root/scripts/tools")
     print(f"📁 /root/scripts/tools/: {msg2}")
     print("========================================")
     sys.exit(0 if ok1 and ok2 else 1)
