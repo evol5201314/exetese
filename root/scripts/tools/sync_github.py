@@ -2,11 +2,6 @@
 # -*- coding: utf-8 -*-
 beizhu = "📥 同步 GitHub 仓库（镜像 /root/scripts/ 结构）"
 
-"""
-同步规则：
-  - 仓库 root/scripts/ 子目录 → /root/scripts/
-  - 仓库 root/scripts/tools/ 子目录 → /root/scripts/tools/
-"""
 import os, sys, json, urllib.request, urllib.error
 
 DEBUG = False
@@ -79,4 +74,46 @@ def sync_dir(repo_url, target_dir, sub_path=""):
         return False, "JSON解析失败"
     if isinstance(files, dict) and "message" in files:
         return False, files["message"]
-    if not isinstance(files,
+    if not isinstance(files, list):
+        return False, "响应格式异常"
+    py_files = [f for f in files if f.get("name", "").endswith(".py") and f.get("type") == "file"]
+    if not py_files:
+        return True, "无 .py 文件"
+    os.makedirs(target_dir, exist_ok=True)
+    downloaded = 0
+    for f in py_files:
+        name = f["name"]
+        download_url = f.get("download_url")
+        if not download_url:
+            continue
+        try:
+            req = urllib.request.Request(download_url)
+            if token:
+                req.add_header("Authorization", f"token {token}")
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                content = resp.read().decode("utf-8")
+                path = os.path.join(target_dir, name)
+                with open(path, "w", encoding="utf-8") as out:
+                    out.write(content)
+                downloaded += 1
+                log(f"  ✅ {name}")
+        except Exception as e:
+            log(f"  ❌ {name}: {e}")
+    return True, f"下载 {downloaded} 个文件"
+
+if __name__ == "__main__":
+    repo = CONFIG.get("repo_url")
+    if not repo:
+        print("❌ 未设置仓库地址")
+        sys.exit(1)
+    print("========================================")
+    print("🐍 GitHub 同步工具 (镜像同步)")
+    print("========================================")
+    # 仓库 root/scripts/ → /root/scripts/
+    ok1, msg1 = sync_dir(repo, "/root/scripts", "root/scripts")
+    print(f"📁 /root/scripts/: {msg1}")
+    # 仓库 root/scripts/tools/ → /root/scripts/tools/
+    ok2, msg2 = sync_dir(repo, "/root/scripts/tools", "root/scripts/tools")
+    print(f"📁 /root/scripts/tools/: {msg2}")
+    print("========================================")
+    sys.exit(0 if ok1 and ok2 else 1)
