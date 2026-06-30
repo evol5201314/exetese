@@ -1,0 +1,12 @@
+<div class="modal active" id="editModal" style="display:flex;">
+<div class="modal-box">
+<span class="close" onclick="closeModalByName('editModal')">&times;</span>
+<h2>✏️ 编辑脚本</h2>
+<div style="margin:12px 0">
+<label>选择脚本</label>
+<select id="editSelect" onchange="loadEditContent()"></select>
+</div>
+<div><label>代码内容</label><textarea id="editContent"></textarea></div>
+<div class="form-actions"><button class="btn-primary" onclick="saveEdit()">💾 保存</button><button class="btn-secondary" onclick="closeModalByName('editModal')">取消</button></div>
+</div>
+</div>
