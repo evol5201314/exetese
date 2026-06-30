@@ -1,0 +1,9 @@
+<div class="modal active" id="newModal" style="display:flex;">
+<div class="modal-box">
+<span class="close" onclick="closeModalByName('newModal')">&times;</span>
+<h2>📝 新建脚本</h2>
+<div style="margin:12px 0"><label>文件名（.py）</label><input type="text" id="newName" placeholder="例如: monitor.py"></div>
+<div><label>代码内容</label><textarea id="newContent" placeholder="# 在此编写 Python 代码"></textarea></div>
+<div class="form-actions"><button class="btn-primary" onclick="createScript()">💾 保存</button><button class="btn-secondary" onclick="closeModalByName('newModal')">取消</button></div>
+</div>
+</div>
