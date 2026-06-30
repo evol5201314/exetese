@@ -16,8 +16,8 @@ beizhu = "📈 独立版：一键同步 GitHub 仓库（镜像同步 /root/scrip
 【功能】
   从 GitHub 仓库同步 .py 文件到路由器
   完全镜像仓库结构：
-    - 仓库根目录 .py → /root/scripts/
-    - 仓库 /tools/ 子目录 .py → /root/scripts/tools/
+    - 仓库 /root/scripts/ 子目录 → /root/scripts/
+    - 仓库 /root/scripts/tools/ 子目录 → /root/scripts/tools/
 
 【依赖】
   ✅ Python 3 (python3-light 即可)
@@ -40,11 +40,10 @@ import urllib.error
 
 # ========== 配置区域（请修改） ==========
 CONFIG = {
-    "repo_url": "https://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/evol5201314/exetese",
+    "repo_url": "https://github.com/evol5201314/exetese",
     "branch": "main",
 }
 
-# 环境变量覆盖（可选）
 ENV_REPO = os.environ.get("GITHUB_REPO")
 ENV_TOKEN = os.environ.get("GITHUB_TOKEN")
 if ENV_REPO:
@@ -97,7 +96,6 @@ def fetch_api(url, token=None):
         return None
 
 def sync_dir(repo_url, target_dir, sub_path=""):
-    """同步指定子目录的 .py 文件"""
     parsed = parse_github_url(repo_url)
     if not parsed:
         return False, "解析失败"
@@ -160,12 +158,12 @@ if __name__ == "__main__":
     print("🐍 GitHub 独立同步工具 (镜像同步)")
     print("========================================")
     
-    # 仓库根目录 → /root/scripts/
-    ok1, msg1 = sync_dir(repo, "/root/scripts", "")
+    # 仓库 /root/scripts/ → /root/scripts/
+    ok1, msg1 = sync_dir(repo, "/root/scripts", "root/scripts")
     print(f"📁 /root/scripts/: {msg1}")
     
-    # 仓库 /tools/ 子目录 → /root/scripts/tools/
-    ok2, msg2 = sync_dir(repo, "/root/scripts/tools", "tools")
+    # 仓库 /root/scripts/tools/ → /root/scripts/tools/
+    ok2, msg2 = sync_dir(repo, "/root/scripts/tools", "root/scripts/tools")
     print(f"📁 /root/scripts/tools/: {msg2}")
     
     print("========================================")
