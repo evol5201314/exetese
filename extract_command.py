@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 """
 ===== 【OpenWrt 低内存专用优化说明 请勿删除以下轻量化逻辑】
 硬件环境：路由可用内存仅≈30M，精简python3，峰值内存控制最小化
@@ -6,41 +6,38 @@
 保留下方备注方便查看脚本详情
 """
 beizhu = "📈 备份command脚本数据"
+
 import os
+
 LUCI_FILE = '/etc/config/luci'
 COMMAND_FILE = '/etc/config/command'
 
 def extract_command():
     if not os.path.exists(LUCI_FILE):
-        print(f"Error: {LUCI_FILE} not found")
         return
 
-    with open(LUCI_FILE, 'r') as f:
-        lines = f.readlines()
-
     extracted = []
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        stripped = line.strip()
-        if stripped.startswith('config command'):
-            # 记录整个段落
-            extracted.append(line)
-            i += 1
-            while i < len(lines):
-                if lines[i].strip().startswith('config '):
-                    break
-                extracted.append(lines[i])
-                i += 1
-            # 不加额外的空行，保持原样
-        else:
-            i += 1
+    in_command = False
+    with open(LUCI_FILE, 'r') as f:
+        for line in f:
+            stripped = line.lstrip()
+            if stripped.startswith('config command'):
+                in_command = True
+                extracted.append(line)
+                continue
+            if in_command:
+                if stripped.startswith('config '):
+                    in_command = False
+                    # 不添加此行，因为它是下一个配置的开始
+                    # 但为了保留原逻辑（不跳过），我们将标志置false，但该行不属于当前段落
+                    # 由于已经在循环中，该行会在后续被忽略（因为in_command为False）
+                    continue
+                extracted.append(line)
+            # 其他行忽略
 
-    # 写入 command 文件（覆盖）
-    with open(COMMAND_FILE, 'w') as f:
-        f.writelines(extracted)
-
-    print(f"Extracted {len(extracted)} lines to {COMMAND_FILE}")
+    if extracted:
+        with open(COMMAND_FILE, 'w') as f:
+            f.writelines(extracted)
 
 if __name__ == '__main__':
     extract_command()
