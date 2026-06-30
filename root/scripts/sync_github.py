@@ -1,43 +1,33 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
-beizhu = "📈 一键同步github仓库脚本到本地"
+beizhu = "📈 独立版：一键同步 GitHub 仓库（镜像同步 /root/scripts/）"
 
 """
-===== 【OpenWrt 低内存专用优化说明 请勿删除以下轻量化逻辑】
+===== 【OpenWrt 低内存专用优化说明】 =====
 硬件环境：路由可用内存仅≈30M，精简python3，峰值内存控制最小化
 屏蔽stdout/stderr输出至/dev/null，不读写闪存，无日志文件占用存储空间
-保留下方备注方便查看脚本详情
 """
+
 """
 ================================================================
-🐍 GitHub 脚本同步工具（独立版）
+🐍 GitHub 独立同步工具（镜像同步版）
 ================================================================
 
 【功能】
-  从 GitHub 仓库拉取所有 .py 文件到本地指定目录
-  无需 Flask，无需 requests，仅依赖 Python 标准库
+  从 GitHub 仓库同步 .py 文件到路由器
+  完全镜像仓库结构：
+    - 仓库根目录 .py → /root/scripts/
+    - 仓库 /tools/ 子目录 .py → /root/scripts/tools/
 
 【依赖】
   ✅ Python 3 (python3-light 即可)
-  ✅ urllib  (标准库)
-  ✅ json    (标准库)
-  ✅ os      (标准库)
+  ✅ urllib (标准库)
+  ✅ json   (标准库)
+  ✅ os     (标准库)
 
 【使用方法】
-  1. 修改下方的配置项（仓库地址、Token、目标目录）
+  1. 修改下方的 CONFIG（仓库地址、Token）
   2. 运行: python3 sync_github.py
-
-【配置方式】
-  方式一：直接修改下方 CONFIG 字典（推荐）
-  方式二：设置环境变量（可选，便于保密 Token）
-    export GITHUB_TOKEN="ghp_xxxxx"
-    export GITHUB_REPO="https://github.com/用户名/仓库名"
-  然后运行脚本
-
-【Cron 定时使用】
-  # 每天凌晨 3 点同步一次
-  0 3 * * * cd /path/to/script && python3 sync_github.py >> /var/log/sync.log 2>&1
 
 ================================================================
 """
@@ -48,16 +38,19 @@ import json
 import urllib.request
 import urllib.error
 
+# ========== 配置区域（请修改） ==========
 CONFIG = {
-    "repo_url": "https://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@github.com/evol5201314/exetese",
-    "target_dir": "/root/scripts",
+    "repo_url": "https://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/evol5201314/exetese",
     "branch": "main",
 }
 
+# 环境变量覆盖（可选）
 ENV_REPO = os.environ.get("GITHUB_REPO")
 ENV_TOKEN = os.environ.get("GITHUB_TOKEN")
 if ENV_REPO:
     CONFIG["repo_url"] = ENV_REPO
+
+# ==========================================
 
 def parse_github_url(raw_url):
     raw = raw_url.strip()
@@ -71,9 +64,7 @@ def parse_github_url(raw_url):
     else:
         rest = raw
     if "@" in rest and "github.com" in rest:
-        parts = rest.split("@")
-        token = parts[0]
-        rest = parts[1]
+        token, rest = rest.split("@", 1)
     if rest.startswith("github.com/"):
         rest = rest[11:]
     elif rest.startswith("www.github.com/"):
@@ -82,9 +73,8 @@ def parse_github_url(raw_url):
         return None
     branch = "main"
     if "/tree/" in rest:
-        parts = rest.split("/tree/")
-        repo_part = parts[0]
-        branch = parts[1].split("/")[0]
+        repo_part, branch = rest.split("/tree/", 1)
+        branch = branch.split("/")[0]
         rest = repo_part
     parts = rest.split("/")
     if len(parts) >= 2:
@@ -96,43 +86,54 @@ def parse_github_url(raw_url):
         }
     return None
 
-def fetch_github_api(url, token=None):
+def fetch_api(url, token=None):
     req = urllib.request.Request(url)
     if token:
         req.add_header("Authorization", f"token {token}")
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return resp.read().decode("utf-8")
-    except:
+    except Exception:
         return None
 
-def sync_from_github(repo_url, target_dir, branch="main"):
+def sync_dir(repo_url, target_dir, sub_path=""):
+    """同步指定子目录的 .py 文件"""
     parsed = parse_github_url(repo_url)
     if not parsed:
-        return False
+        return False, "解析失败"
     username = parsed["username"]
     repo = parsed["repo"]
     token = parsed["token"]
-    branch = parsed.get("branch", branch)
-    api_url = f"https://api.github.com/repos/{username}/{repo}/contents?ref={branch}"
-    resp_text = fetch_github_api(api_url, token)
-    if resp_text is None:
-        return False
+    branch = parsed.get("branch", "main")
+    
+    if sub_path:
+        api_url = f"https://api.github.com/repos/{username}/{repo}/contents/{sub_path}?ref={branch}"
+    else:
+        api_url = f"https://api.github.com/repos/{username}/{repo}/contents?ref={branch}"
+    
+    resp = fetch_api(api_url, token)
+    if resp is None:
+        return False, "API请求失败"
+    
     try:
-        files = json.loads(resp_text)
-    except:
-        return False
+        files = json.loads(resp)
+    except Exception:
+        return False, "JSON解析失败"
+    
     if isinstance(files, dict) and "message" in files:
-        return False
+        return False, files["message"]
     if not isinstance(files, list):
-        return False
+        return False, "响应格式异常"
+    
     py_files = [f for f in files if f.get("name", "").endswith(".py") and f.get("type") == "file"]
     if not py_files:
-        return True
+        return True, "无 .py 文件"
+    
     os.makedirs(target_dir, exist_ok=True)
-    for file_info in py_files:
-        name = file_info["name"]
-        download_url = file_info.get("download_url")
+    downloaded = 0
+    for f in py_files:
+        name = f["name"]
+        download_url = f.get("download_url")
         if not download_url:
             continue
         try:
@@ -141,18 +142,31 @@ def sync_from_github(repo_url, target_dir, branch="main"):
                 req.add_header("Authorization", f"token {token}")
             with urllib.request.urlopen(req, timeout=30) as resp:
                 content = resp.read().decode("utf-8")
-                target_path = os.path.join(target_dir, name)
-                with open(target_path, "w", encoding="utf-8") as f:
-                    f.write(content)
-        except:
+                path = os.path.join(target_dir, name)
+                with open(path, "w", encoding="utf-8") as out:
+                    out.write(content)
+                downloaded += 1
+        except Exception:
             pass
-    return True
+    return True, f"下载 {downloaded} 个文件"
 
 if __name__ == "__main__":
     repo = CONFIG.get("repo_url")
-    target = CONFIG.get("target_dir", "/root/scripts")
-    branch = CONFIG.get("branch", "main")
     if not repo:
+        print("❌ 未设置仓库地址")
         sys.exit(1)
-    success = sync_from_github(repo, target, branch)
-    sys.exit(0 if success else 1)
+    
+    print("========================================")
+    print("🐍 GitHub 独立同步工具 (镜像同步)")
+    print("========================================")
+    
+    # 仓库根目录 → /root/scripts/
+    ok1, msg1 = sync_dir(repo, "/root/scripts", "")
+    print(f"📁 /root/scripts/: {msg1}")
+    
+    # 仓库 /tools/ 子目录 → /root/scripts/tools/
+    ok2, msg2 = sync_dir(repo, "/root/scripts/tools", "tools")
+    print(f"📁 /root/scripts/tools/: {msg2}")
+    
+    print("========================================")
+    sys.exit(0 if ok1 and ok2 else 1)
