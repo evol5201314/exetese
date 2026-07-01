@@ -687,9 +687,7 @@ function deleteScript(){
     closeModalByName('delModal');
 }
 
-// ========== 上传脚本（独立脚本 + 动态弹窗） ==========
-document.getElementById('btnUpload').onclick = function() { loadModal('uploadModal'); };
-
+// ========== 上传脚本（base64编码防止特殊字符问题） ==========
 function doUpload() {
     var input = document.getElementById('uploadFileInput');
     if (!input.files || !input.files.length) {
@@ -701,18 +699,21 @@ function doUpload() {
         alert('只支持 .py 文件');
         return;
     }
+    var output = document.getElementById('uploadOutput');
+    output.style.display = 'block';
+    output.textContent = '⏳ 读取文件...';
     var reader = new FileReader();
     reader.onload = function(e) {
         var content = e.target.result;
-        var output = document.getElementById('uploadOutput');
-        output.style.display = 'block';
+        // 将内容转为 base64
+        var base64 = btoa(content);
         output.textContent = '⏳ 上传中...';
         fetch('/api/run_tool', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
                 script: 'upload_script.py',
-                args: ['--filename', file.name, '--content', content]
+                args: ['--filename', file.name, '--content', base64]
             })
         })
         .then(r => r.json())
@@ -720,11 +721,15 @@ function doUpload() {
             output.textContent = d.output || '执行完成';
             if (d.output && d.output.indexOf('✅') !== -1) {
                 loadAll();
+                input.value = ''; // 清空文件选择
             }
         })
         .catch(e => {
             output.textContent = '❌ 上传失败: ' + e.message;
         });
+    };
+    reader.onerror = function() {
+        output.textContent = '❌ 读取文件失败';
     };
     reader.readAsText(file);
 }
