@@ -1,28 +1,38 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-beizhu = "📤 上传脚本（从当前目录选择 .py 文件）"
+beizhu = "📤 上传脚本到 /root/scripts/"
 
-import os, sys, shutil
+import os, sys, argparse
+
 SCRIPTS_DIR = "/root/scripts"
-print("📤 上传脚本（请将要上传的 .py 文件放在当前目录）")
-files = [f for f in os.listdir('.') if f.endswith('.py') and os.path.isfile(f)]
-if not files:
-    print("❌ 当前目录没有 .py 文件")
-    sys.exit(1)
-print("📋 可用文件:")
-for i, f in enumerate(files):
-    print(f"  {i+1}. {f}")
-try:
-    idx = int(input("选择文件编号: ")) - 1
-    name = files[idx]
-except:
-    print("❌ 无效选择")
-    sys.exit(1)
-dst = os.path.join(SCRIPTS_DIR, name)
-if os.path.exists(dst):
-    overwrite = input(f"⚠️ {name} 已存在，覆盖？(y/N): ")
-    if overwrite.lower() != 'y':
-        print("ℹ️ 取消上传")
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--filename', help='要上传的文件名')
+    parser.add_argument('--content', help='文件内容')
+    args = parser.parse_args()
+    
+    if not args.filename:
+        print("❌ 缺少文件名")
+        sys.exit(1)
+    
+    if not args.filename.endswith('.py'):
+        print("❌ 只支持 .py 文件")
+        sys.exit(1)
+    
+    if not args.content:
+        print("❌ 文件内容为空")
+        sys.exit(1)
+    
+    path = os.path.join(SCRIPTS_DIR, args.filename)
+    try:
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(args.content)
+        print(f"✅ {args.filename} 上传成功")
         sys.exit(0)
-shutil.copy2(name, dst)
-print(f"✅ {name} 上传成功")
+    except Exception as e:
+        print(f"❌ 上传失败: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
