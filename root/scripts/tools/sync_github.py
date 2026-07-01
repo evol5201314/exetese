@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-beizhu = "📥 同步 GitHub 仓库（支持 .py 和 .html）"
+beizhu = "📥 同步 GitHub（支持自动保存仓库地址到自身）"
 
 import os, sys, json, urllib.request, urllib.error, argparse
 
@@ -8,6 +8,34 @@ CONFIG = {
     "repo_url": "https://github.com/evol5201314/exetest",
     "branch": "main",
 }
+
+def save_repo_to_self(new_repo):
+    script_path = os.path.abspath(__file__)
+    try:
+        with open(script_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        new_lines = []
+        in_config = False
+        for line in lines:
+            stripped = line.lstrip()
+            if stripped.startswith('CONFIG = {'):
+                in_config = True
+                new_lines.append(line)
+                continue
+            if in_config and '"repo_url"' in stripped:
+                indent = line[:len(line) - len(line.lstrip())]
+                new_lines.append(f'{indent}"repo_url": "{new_repo}",\n')
+            elif in_config and '}' in stripped and not stripped.startswith('"'):
+                in_config = False
+                new_lines.append(line)
+            else:
+                new_lines.append(line)
+        with open(script_path, 'w', encoding='utf-8') as f:
+            f.writelines(new_lines)
+        return True
+    except Exception as e:
+        print(f"⚠️ 保存配置失败: {e}")
+        return False
 
 def parse_github_url(raw_url):
     raw = raw_url.strip()
@@ -95,12 +123,24 @@ def sync_dir(repo_url, target_dir, sub_path=""):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--repo', help='GitHub 仓库地址')
+    parser.add_argument('--get-config', action='store_true', help='获取当前配置的仓库地址')
     args = parser.parse_args()
-    
+
+    if args.get_config:
+        print(CONFIG.get("repo_url", ""))
+        sys.exit(0)
+
     repo = args.repo if args.repo else CONFIG.get("repo_url")
     if not repo:
         print("❌ 未设置仓库地址")
         sys.exit(1)
+
+    if args.repo and args.repo != CONFIG.get("repo_url"):
+        if save_repo_to_self(args.repo):
+            print(f"✅ 仓库地址已保存: {args.repo}")
+        else:
+            print("⚠️ 仓库地址保存失败，本次仍使用新地址同步")
+
     print("========================================")
     print("🐍 GitHub 同步工具")
     print(f"🔗 {repo}")
